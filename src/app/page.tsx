@@ -38,35 +38,47 @@ export default function Home() {
             </div>
           </Link>
 
-          <div className="p-6 bg-slate-900/80 border border-slate-800 rounded-xl text-left space-y-3 shadow-lg hover:border-yellow-600 transition">
-            <div className="h-10 w-10 bg-yellow-600/20 text-yellow-400 rounded-lg flex items-center justify-center font-bold text-lg">
+          <Link
+            href="/scoreboard/tatami-1"
+            className="p-6 bg-slate-900/80 border border-slate-800 rounded-xl text-left space-y-3 shadow-lg hover:border-yellow-600 transition block group"
+          >
+            <div className="h-10 w-10 bg-yellow-600/20 text-yellow-400 rounded-lg flex items-center justify-center font-bold text-lg group-hover:bg-yellow-600 group-hover:text-slate-950 transition">
               📺
             </div>
-            <h2 className="text-xl font-bold text-white">Marcador Público (TV)</h2>
+            <h2 className="text-xl font-bold text-white flex items-center justify-between">
+              Marcador Público (TV)
+              <span className="text-xs text-yellow-400 font-normal">Abrir TV →</span>
+            </h2>
             <p className="text-sm text-slate-400">
               Sincronización en milisegundos mediante Supabase Realtime Channels. Modo corrección silenciosa en Mate.
             </p>
             <div className="pt-2">
               <span className="text-xs text-yellow-400 font-mono bg-yellow-950/40 px-2 py-1 rounded">
-                Supabase Realtime Broadcast
+                Canal: tatami-1 • Latencia &lt; 20ms
               </span>
             </div>
-          </div>
+          </Link>
 
-          <div className="p-6 bg-slate-900/80 border border-slate-800 rounded-xl text-left space-y-3 shadow-lg hover:border-emerald-600 transition">
-            <div className="h-10 w-10 bg-emerald-600/20 text-emerald-400 rounded-lg flex items-center justify-center font-bold text-lg">
-              📊
+          <Link
+            href="/admin/roster"
+            className="p-6 bg-slate-900/80 border border-slate-800 rounded-xl text-left space-y-3 shadow-lg hover:border-emerald-600 transition block group"
+          >
+            <div className="h-10 w-10 bg-emerald-600/20 text-emerald-400 rounded-lg flex items-center justify-center font-bold text-lg group-hover:bg-emerald-600 group-hover:text-white transition">
+              📑
             </div>
-            <h2 className="text-xl font-bold text-white">Multi-Ranking & Wallets</h2>
+            <h2 className="text-xl font-bold text-white flex items-center justify-between">
+              Módulo ETL & Sorteo
+              <span className="text-xs text-emerald-400 font-normal">Importar Nómina →</span>
+            </h2>
             <p className="text-sm text-slate-400">
-              Degradación temporal IJF (100% → 50% → 0%), consolidación Best-6 y segmentación por divisiones de peso/edad.
+              Importación CSV en cliente con PapaParse, validación de RUT y generación dinámica de llaves (Best of 3, Round Robin Berger o Eliminación Simple).
             </p>
             <div className="pt-2">
               <span className="text-xs text-emerald-400 font-mono bg-emerald-950/40 px-2 py-1 rounded">
-                Multi-Billetera con RLS
+                Reglas IJF • Algoritmo Híbrido
               </span>
             </div>
-          </div>
+          </Link>
         </div>
       </div>
     </main>

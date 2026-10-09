@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { getSanitizedSupabaseUrl } from './config';
 
 /**
  * Cliente de Supabase para Server Components, Server Actions y Route Handlers estándar.
@@ -8,8 +9,8 @@ import { cookies } from 'next/headers';
 export async function createClient() {
   const cookieStore = await cookies();
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSanitizedSupabaseUrl();
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
 
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error(

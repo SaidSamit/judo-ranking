@@ -1,4 +1,5 @@
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { getSanitizedSupabaseUrl } from './config';
 
 /**
  * Cliente de Supabase con privilegios administrativos (Service Role Key).
@@ -6,8 +7,8 @@ import { createClient as createSupabaseClient } from '@supabase/supabase-js';
  * Utilizar ÚNICAMENTE en el backend (Route Handlers seguros) y NUNCA exponer al cliente.
  */
 export function createAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseUrl = getSanitizedSupabaseUrl();
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 
   if (!supabaseUrl || !serviceRoleKey) {
     throw new Error(

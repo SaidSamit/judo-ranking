@@ -18,14 +18,18 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { MatchEvent, CombatantColor, MatchAction } from '@/types/events';
+import { MatchEvent, CombatantColor, MatchAction, BroadcastMatchPayload } from '@/types/events';
 import { projectMatchState, getOsaekomiAward } from '@/lib/rules/ijf-engine';
 import { useTatamiShortcuts } from '@/hooks/use-tatami-shortcuts';
+import { useRealtimeBroadcast } from '@/hooks/use-realtime-broadcast';
+import { useSyncEngine } from '@/lib/offline/sync-engine';
+import { createClient } from '@/lib/supabase/client';
 import {
   appendLocalEvent,
   getMatchEventsLocally,
   markEventUndoneLocally,
   saveMatchLocally,
+  getLocalDB,
   LocalMatch,
 } from '@/lib/offline/db';
 
@@ -34,6 +38,12 @@ interface TatamiControlTableProps {
 }
 
 export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
+  // 0. Estado del Combate Activo (admite rotación dinámica de cola de tatami)
+  const [currentMatch, setCurrentMatch] = useState<LocalMatch>(initialMatch);
+  useEffect(() => {
+    setCurrentMatch(initialMatch);
+  }, [initialMatch]);
+
   // 1. Estado de la Pila de Eventos (Fuente Única de Verdad)
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [matchTimeRemaining, setMatchTimeRemaining] = useState<number>(
@@ -45,9 +55,20 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   const [isGoldenScore, setIsGoldenScore] = useState<boolean>(false);
   const [matchStatus, setMatchStatus] = useState<LocalMatch['status']>(initialMatch.status);
 
+  // Estados de la cola automática de combates (Fase 5)
+  const [nextScheduledMatch, setNextScheduledMatch] = useState<LocalMatch | null>(null);
+  const [autoAdvanceCountdown, setAutoAdvanceCountdown] = useState<number | null>(null);
+  const [isQueueEmpty, setIsQueueEmpty] = useState<boolean>(false);
+
   // Modal de Hansoku-make diferido (tipificación técnica vs disciplinaria al cerrar con Enter)
   const [showHansokuModal, setShowHansokuModal] = useState<boolean>(false);
   const [selectedHansokuType, setSelectedHansokuType] = useState<'TECHNICAL' | 'DISCIPLINARY'>('TECHNICAL');
+
+  // Control de hidratación de SSR para evitar diferencias de renderizado
+  const [isMounted, setIsMounted] = useState<boolean>(false);
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   // Ref para controlar el bucle de temporizadores de alta precisión
   const masterTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -64,8 +85,8 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   useEffect(() => {
     async function loadOfflineData() {
       try {
-        await saveMatchLocally(initialMatch);
-        const storedEvents = await getMatchEventsLocally(initialMatch.id);
+        await saveMatchLocally(currentMatch);
+        const storedEvents = await getMatchEventsLocally(currentMatch.id);
         if (storedEvents.length > 0) {
           setEvents(storedEvents);
         }
@@ -74,7 +95,7 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       }
     }
     loadOfflineData();
-  }, [initialMatch]);
+  }, [currentMatch.id]);
 
   // ============================================================================
   // PROYECCIÓN MATEMÁTICA DEL MARCADOR (EVENT SOURCING)
@@ -82,6 +103,232 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   const projection = useMemo(() => {
     return projectMatchState(events);
   }, [events]);
+
+  // ============================================================================
+  // INTEGRACIÓN FASE 4: REALTIME BROADCAST & SYNC ENGINE
+  // ============================================================================
+  const channelName = `tatami-${currentMatch.tatami_number}`;
+  const { broadcastState, isSubscribed: isRealtimeConnected } = useRealtimeBroadcast({
+    channelName,
+    mode: 'EMITTER',
+  });
+
+  const getLatestSnapshot = useCallback((): Partial<BroadcastMatchPayload> => {
+    return {
+      match_id: currentMatch.id,
+      tatami_number: currentMatch.tatami_number,
+      match_number: currentMatch.match_number,
+      category_name: currentMatch.category_name || 'Categoría Oficial',
+      white_athlete_name: currentMatch.white_athlete_name,
+      white_club_name: currentMatch.white_club_name,
+      blue_athlete_name: currentMatch.blue_athlete_name,
+      blue_club_name: currentMatch.blue_club_name,
+      match_time_remaining: matchTimeRemaining,
+      match_duration_seconds: currentMatch.match_duration_seconds,
+      is_clock_running: isClockRunning,
+      active_osaekomi: activeOsaekomi,
+      osaekomi_seconds: osaekomiSeconds,
+      is_golden_score: isGoldenScore,
+      match_status: matchStatus,
+      projection,
+      timestamp: Date.now(),
+    };
+  }, [
+    activeOsaekomi,
+    currentMatch,
+    isClockRunning,
+    isGoldenScore,
+    matchStatus,
+    matchTimeRemaining,
+    osaekomiSeconds,
+    projection,
+  ]);
+
+  const { pendingCount, isSyncing, isOnline } = useSyncEngine({
+    matchId: currentMatch.id,
+    getLatestSnapshot,
+  });
+
+  // ============================================================================
+  // INTEGRACIÓN FASE 5: CONSUMO DE COLA DE COMBATES (AUTO-ADVANCE)
+  // ============================================================================
+  const fetchNextScheduledMatch = useCallback(
+    async (tatamiNum: number, currentId: string): Promise<LocalMatch | null> => {
+      // 1. Intentar buscar en Supabase primero (fuente de verdad cloud)
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('matches')
+          .select(`
+            id,
+            tournament_id,
+            category_id,
+            tatami_number,
+            match_number,
+            round,
+            status,
+            current_match_time_seconds,
+            white_athlete_id,
+            blue_athlete_id
+          `)
+          .eq('tatami_number', tatamiNum)
+          .eq('status', 'SCHEDULED')
+          .neq('id', currentId)
+          .order('match_number', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (!error && data) {
+          const nextLocal: LocalMatch = {
+            id: data.id,
+            tournament_id: data.tournament_id,
+            category_id: data.category_id,
+            category_name: currentMatch.category_name || 'Categoría Oficial',
+            tatami_number: data.tatami_number,
+            match_number: data.match_number,
+            white_athlete_name: 'Atleta Blanco',
+            white_club_name: 'Club Blanco',
+            blue_athlete_name: 'Atleta Azul',
+            blue_club_name: 'Club Azul',
+            match_duration_seconds: currentMatch.match_duration_seconds,
+            status: 'SCHEDULED',
+            current_time_seconds: 0,
+            updated_at: new Date().toISOString(),
+          };
+          return nextLocal;
+        }
+      } catch (err) {
+        console.warn('[Queue] Error consultando Supabase, consultando IndexedDB:', err);
+      }
+
+      // 2. Fallback offline: Consultar cola local en IndexedDB
+      try {
+        const db = await getLocalDB();
+        const matches = await db.getAllFromIndex('matches', 'by_tatami', tatamiNum);
+        const scheduled = matches
+          .filter((m) => m.status === 'SCHEDULED' && m.id !== currentId)
+          .sort((a, b) => a.match_number - b.match_number);
+
+        if (scheduled.length > 0) {
+          return scheduled[0];
+        }
+      } catch (err) {
+        console.warn('[Queue] Error consultando IndexedDB:', err);
+      }
+
+      return null;
+    },
+    [currentMatch.category_name, currentMatch.match_duration_seconds]
+  );
+
+  // Carga e inicialización del siguiente combate en la mesa
+  const loadNextMatch = useCallback(
+    async (matchToLoad: LocalMatch) => {
+      await saveMatchLocally(matchToLoad);
+      const storedEvents = await getMatchEventsLocally(matchToLoad.id);
+      setEvents(storedEvents);
+
+      setCurrentMatch(matchToLoad);
+      setMatchTimeRemaining(matchToLoad.match_duration_seconds);
+      setIsClockRunning(false);
+      setActiveOsaekomi(null);
+      setOsaekomiSeconds(0);
+      setIsGoldenScore(false);
+      setMatchStatus(matchToLoad.status);
+      setNextScheduledMatch(null);
+      setAutoAdvanceCountdown(null);
+      setIsQueueEmpty(false);
+
+      if (typeof window !== 'undefined' && window.history?.pushState) {
+        window.history.pushState(null, '', `/tatami/${matchToLoad.id}`);
+      }
+
+      const initialSnap: BroadcastMatchPayload = {
+        match_id: matchToLoad.id,
+        tatami_number: matchToLoad.tatami_number,
+        match_number: matchToLoad.match_number,
+        category_name: matchToLoad.category_name || 'Categoría Oficial',
+        white_athlete_name: matchToLoad.white_athlete_name,
+        white_club_name: matchToLoad.white_club_name,
+        blue_athlete_name: matchToLoad.blue_athlete_name,
+        blue_club_name: matchToLoad.blue_club_name,
+        match_time_remaining: matchToLoad.match_duration_seconds,
+        match_duration_seconds: matchToLoad.match_duration_seconds,
+        is_clock_running: false,
+        active_osaekomi: null,
+        osaekomi_seconds: 0,
+        is_golden_score: false,
+        match_status: matchToLoad.status,
+        projection: projectMatchState([]),
+        timestamp: Date.now(),
+      };
+      broadcastState(initialSnap);
+    },
+    [broadcastState]
+  );
+
+  // Al finalizar el combate actual (FINISHED), buscar y preparar el siguiente
+  useEffect(() => {
+    if (matchStatus === 'FINISHED') {
+      let isSubscribed = true;
+
+      // 1. Guardar resultado final en IndexedDB
+      saveMatchLocally({
+        ...currentMatch,
+        status: 'FINISHED',
+        winner_id: projection.winner ? (projection.winner === 'WHITE' ? currentMatch.white_athlete_name : currentMatch.blue_athlete_name) : null,
+        win_reason: projection.win_reason,
+        updated_at: new Date().toISOString(),
+      });
+
+      // 2. Buscar próximo combate en la cola
+      fetchNextScheduledMatch(currentMatch.tatami_number, currentMatch.id).then((next) => {
+        if (!isSubscribed) return;
+        if (next) {
+          setNextScheduledMatch(next);
+          setAutoAdvanceCountdown(4); // Cuenta regresiva de 4 segundos
+        } else {
+          setIsQueueEmpty(true);
+        }
+      });
+
+      return () => {
+        isSubscribed = false;
+      };
+    }
+  }, [currentMatch, fetchNextScheduledMatch, matchStatus, projection.win_reason, projection.winner]);
+
+  // Manejo de la cuenta regresiva para el avance automático
+  useEffect(() => {
+    if (autoAdvanceCountdown === null) return;
+
+    if (autoAdvanceCountdown <= 0) {
+      if (nextScheduledMatch) {
+        loadNextMatch(nextScheduledMatch);
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setAutoAdvanceCountdown((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [autoAdvanceCountdown, loadNextMatch, nextScheduledMatch]);
+
+  // Emitir broadcast continuo en cada cambio de reloj o marcador
+  useEffect(() => {
+    broadcastState(getLatestSnapshot() as BroadcastMatchPayload);
+  }, [
+    broadcastState,
+    getLatestSnapshot,
+    matchTimeRemaining,
+    osaekomiSeconds,
+    projection,
+    matchStatus,
+    activeOsaekomi,
+    isClockRunning,
+  ]);
 
   // Estado y ref para alertas y candados de validación en tiempo real
   const [validationWarning, setValidationWarning] = useState<string | null>(null);
@@ -121,12 +368,12 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       const nextSeq = events.length + 1;
       const newEvent: MatchEvent = {
         id: crypto.randomUUID(),
-        match_id: initialMatch.id,
+        match_id: currentMatch.id,
         sequence_number: nextSeq,
         action,
         target,
         match_time: formatTime(matchTimeRemaining),
-        match_time_seconds: initialMatch.match_duration_seconds - matchTimeRemaining,
+        match_time_seconds: currentMatch.match_duration_seconds - matchTimeRemaining,
         is_undone: false,
         payload,
         created_at: new Date().toISOString(),
@@ -144,10 +391,10 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       }
     },
     [
+      currentMatch.id,
+      currentMatch.match_duration_seconds,
       events.length,
       formatTime,
-      initialMatch.id,
-      initialMatch.match_duration_seconds,
       matchTimeRemaining,
       projection.blue_score,
       projection.white_score,
@@ -250,12 +497,12 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       // 3. Generar evento de puntaje gemelo para el nuevo atleta correcto
       const transferredEvent: MatchEvent = {
         id: crypto.randomUUID(),
-        match_id: initialMatch.id,
+        match_id: currentMatch.id,
         sequence_number: nextSeq++,
         action: oldEv.action,
         target: newColor,
         match_time: formatTime(matchTimeRemaining),
-        match_time_seconds: initialMatch.match_duration_seconds - matchTimeRemaining,
+        match_time_seconds: currentMatch.match_duration_seconds - matchTimeRemaining,
         is_undone: false,
         payload: {
           source: 'OSAEKOMI',
@@ -277,12 +524,12 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
     // 4. Registrar evento formal SWAP_OSAEKOMI en el stream
     const swapEvent: MatchEvent = {
       id: crypto.randomUUID(),
-      match_id: initialMatch.id,
+      match_id: currentMatch.id,
       sequence_number: nextSeq++,
       action: 'SWAP_OSAEKOMI',
       target: newColor,
       match_time: formatTime(matchTimeRemaining),
-      match_time_seconds: initialMatch.match_duration_seconds - matchTimeRemaining,
+      match_time_seconds: currentMatch.match_duration_seconds - matchTimeRemaining,
       is_undone: false,
       payload: {
         from: oldColor,
@@ -305,10 +552,10 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
     setActiveOsaekomi(newColor);
   }, [
     activeOsaekomi,
+    currentMatch.id,
+    currentMatch.match_duration_seconds,
     events,
     formatTime,
-    initialMatch.id,
-    initialMatch.match_duration_seconds,
     matchTimeRemaining,
   ]);
 
@@ -527,18 +774,54 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       <header className="flex items-center justify-between px-6 py-3 bg-slate-900 border-b border-slate-800">
         <div className="flex items-center space-x-4">
           <span className="text-xl font-black tracking-wider text-amber-400">
-            TATAMI {initialMatch.tatami_number}
+            TATAMI {currentMatch.tatami_number}
           </span>
           <span className="text-sm px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-            {initialMatch.category_name || 'Categoría Oficial'} • Combate #{initialMatch.match_number}
+            {currentMatch.category_name || 'Categoría Oficial'} • Combate #{currentMatch.match_number}
           </span>
         </div>
 
         <div className="flex items-center space-x-3">
-          <div className="flex items-center space-x-2 text-xs text-slate-400">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Persistencia IndexedDB Activa</span>
+          {/* Indicador Realtime Broadcast (TV) */}
+          <div className="flex items-center space-x-2 text-xs bg-slate-950 px-2.5 py-1 rounded-full border border-slate-800">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isMounted && isRealtimeConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+              }`}
+            />
+            <span className="text-slate-300">
+              TV Realtime: {isMounted && isRealtimeConnected ? 'Conectado' : 'Conectando'}
+            </span>
           </div>
+
+          {/* Indicador Sync Engine (Cloud) */}
+          <div className="flex items-center space-x-2 text-xs bg-slate-950 px-2.5 py-1 rounded-full border border-slate-800">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                !isMounted
+                  ? 'bg-slate-500'
+                  : !isOnline
+                  ? 'bg-red-500'
+                  : isSyncing
+                  ? 'bg-blue-400 animate-spin'
+                  : pendingCount > 0
+                  ? 'bg-amber-400'
+                  : 'bg-emerald-400'
+              }`}
+            />
+            <span className="text-slate-300">
+              {!isMounted
+                ? 'Iniciando...'
+                : !isOnline
+                ? 'Offline (IndexedDB)'
+                : isSyncing
+                ? 'Sincronizando...'
+                : pendingCount > 0
+                ? `${pendingCount} pend. sync`
+                : 'Cloud al día'}
+            </span>
+          </div>
+
           <span
             className={`text-xs px-2.5 py-1 rounded font-bold uppercase tracking-wider ${
               matchStatus === 'ONGOING'
@@ -552,6 +835,53 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
           </span>
         </div>
       </header>
+
+      {/* BANNER DE COLA DE TATAMI: PRÓXIMO COMBATE PROGRAMADO */}
+      {nextScheduledMatch && (
+        <div className="bg-amber-950/95 border-b-2 border-amber-500 px-6 py-2.5 flex items-center justify-between text-amber-200 z-40 shadow-xl animate-pulse">
+          <div className="flex items-center space-x-3">
+            <span className="text-xl">⚡</span>
+            <div>
+              <span className="text-xs font-black uppercase text-amber-400 tracking-wider block">
+                Combate Concluido • Siguiente en Cola (Tatami {currentMatch.tatami_number})
+              </span>
+              <span className="text-sm font-bold text-white">
+                Combate #{nextScheduledMatch.match_number}: {nextScheduledMatch.white_athlete_name} vs{' '}
+                {nextScheduledMatch.blue_athlete_name} ({nextScheduledMatch.category_name})
+              </span>
+            </div>
+            {autoAdvanceCountdown !== null && (
+              <span className="text-xs bg-amber-900/80 px-2.5 py-1 rounded-full border border-amber-600 font-mono font-bold text-amber-300">
+                Cargando en {autoAdvanceCountdown}s...
+              </span>
+            )}
+          </div>
+
+          <button
+            onClick={() => loadNextMatch(nextScheduledMatch)}
+            className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition shadow-lg flex items-center space-x-2"
+          >
+            <span>Cargar Ahora</span>
+            <span>⏭</span>
+          </button>
+        </div>
+      )}
+
+      {isQueueEmpty && matchStatus === 'FINISHED' && (
+        <div className="bg-slate-900 border-b-2 border-emerald-500 px-6 py-2.5 flex items-center justify-between text-emerald-300 z-40 shadow-xl">
+          <div className="flex items-center space-x-3">
+            <span className="text-xl">🏆</span>
+            <div>
+              <span className="text-xs font-black uppercase text-emerald-400 tracking-wider block">
+                Cola de Tatami Finalizada
+              </span>
+              <span className="text-sm font-bold text-white">
+                No quedan más combates programados en este tatami para la jornada actual.
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CUERPO PRINCIPAL: PANTALLA DIVIDIDA POR HEMISFERIOS */}
       <main className="flex-1 grid grid-cols-12 gap-0 overflow-hidden">
@@ -567,10 +897,10 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
               <span className="text-xs text-slate-400 font-mono">Shift + Key = Deshacer</span>
             </div>
             <h2 className="text-3xl font-black tracking-tight mt-2 text-slate-900 truncate">
-              {initialMatch.white_athlete_name}
+              {currentMatch.white_athlete_name}
             </h2>
             <p className="text-sm font-semibold text-slate-600 truncate">
-              {initialMatch.white_club_name}
+              {currentMatch.white_club_name}
             </p>
           </div>
 
@@ -740,10 +1070,10 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
               <span className="text-xs text-blue-300 font-mono">Shift + Key = Deshacer</span>
             </div>
             <h2 className="text-3xl font-black tracking-tight mt-2 text-white truncate">
-              {initialMatch.blue_athlete_name}
+              {currentMatch.blue_athlete_name}
             </h2>
             <p className="text-sm font-semibold text-blue-200 truncate">
-              {initialMatch.blue_club_name}
+              {currentMatch.blue_club_name}
             </p>
           </div>
 

@@ -96,3 +96,32 @@ VALUES (
     240,
     1
 ) ON CONFLICT DO NOTHING;
+
+-- 7. Combate de Demostración Semilla (Tatami 1)
+INSERT INTO matches (
+    id,
+    organization_id,
+    tournament_id,
+    category_id,
+    tatami_number,
+    match_number,
+    round,
+    status,
+    white_score,
+    blue_score,
+    current_match_time_seconds,
+    is_golden_score
+) VALUES (
+    '10000000-0000-0000-0000-000000000001',
+    'a0000000-0000-0000-0000-000000000001',
+    'e0000000-0000-0000-0000-000000000001',
+    'f0000000-0000-0000-0000-000000000001',
+    1,
+    1,
+    'FINAL',
+    'SCHEDULED',
+    '{"ippon": 0, "wazaari": 0, "yuko": 0, "shido": 0}'::jsonb,
+    '{"ippon": 0, "wazaari": 0, "yuko": 0, "shido": 0}'::jsonb,
+    0,
+    false
+) ON CONFLICT (id) DO NOTHING;

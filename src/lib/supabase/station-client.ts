@@ -1,4 +1,5 @@
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { getSanitizedSupabaseUrl } from './config';
 
 /**
  * Crea un cliente Supabase con el contexto de seguridad de la Estación (Tatami, Pesaje, etc.)
@@ -8,8 +9,8 @@ import { createClient as createSupabaseClient } from '@supabase/supabase-js';
  * con las políticas RLS restringidas a la organización de la estación.
  */
 export function createStationClient(accessToken: string) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = getSanitizedSupabaseUrl();
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
 
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error(

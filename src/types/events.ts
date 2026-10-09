@@ -66,3 +66,23 @@ export interface MatchProjection {
   has_direct_hansoku_make: boolean;       // Requiere tipificación (Técnico vs Disciplinario)
   direct_hansoku_target: CombatantColor | null;
 }
+
+export interface BroadcastMatchPayload {
+  match_id: string;
+  tatami_number: number;
+  match_number: number;
+  category_name: string;
+  white_athlete_name: string;
+  white_club_name: string;
+  blue_athlete_name: string;
+  blue_club_name: string;
+  match_time_remaining: number;
+  match_duration_seconds: number;
+  is_clock_running: boolean;
+  active_osaekomi: CombatantColor | null;
+  osaekomi_seconds: number;
+  is_golden_score: boolean;
+  match_status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED';
+  projection: MatchProjection;
+  timestamp: number;
+}
