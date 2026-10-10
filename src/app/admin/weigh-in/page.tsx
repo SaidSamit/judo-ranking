@@ -292,57 +292,19 @@ export default function WeighInPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-12 font-sans">
-      <div className="max-w-6xl mx-auto space-y-8">
-        {/* NAVEGACIÓN SUPERIOR DE ADMINISTRACIÓN */}
-        <nav className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
-          <div className="flex items-center space-x-3">
-            <span className="text-xl font-black text-amber-400">JUDO RANKING</span>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 font-mono">
-              Fase 6 • Estación de Pesaje
-            </span>
-          </div>
-
-          <div className="flex items-center space-x-2 text-xs font-bold">
-            <Link
-              href="/admin/roster"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            >
-              Nómina / ETL
-            </Link>
-            <Link
-              href="/admin/weigh-in"
-              className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-black shadow"
-            >
-              Estación de Pesaje
-            </Link>
-            <Link
-              href="/admin/brackets"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            >
-              Panel del Director (Llaves)
-            </Link>
-            <Link
-              href="/admin/tatami/1"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            >
-              Cola Tatami 1
-            </Link>
-          </div>
-        </nav>
-
-        {/* CABECERA */}
-        <header className="space-y-2">
-          <div className="flex items-center space-x-2">
-            <Scale className="w-8 h-8 text-amber-400" />
-            <h1 className="text-3xl font-black text-white">Estación de Pesaje Oficial</h1>
-          </div>
-          <p className="text-slate-400 text-sm">
-            Busca atletas por RUT o Nombre, registra su peso real certificado y confirma su
-            aprobación (PASSED). Si un atleta excede el límite, el sistema sugiere automáticamente
-            su ascenso a la categoría superior inmediata.
-          </p>
-        </header>
+    <div className="p-6 md:p-10 max-w-7xl mx-auto space-y-6">
+      {/* CABECERA */}
+      <header className="space-y-1 border-b border-slate-800/80 pb-5">
+        <div className="flex items-center space-x-2">
+          <Scale className="w-7 h-7 text-amber-400" />
+          <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight">Estación de Pesaje Oficial</h1>
+        </div>
+        <p className="text-slate-400 text-sm">
+          Busca atletas por RUT o Nombre, registra su peso real certificado y confirma su
+          aprobación (PASSED). Si un atleta excede el límite, el sistema sugiere automáticamente
+          su ascenso a la categoría superior inmediata.
+        </p>
+      </header>
 
         {/* MÉTRICAS DE PESAJE */}
         <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -582,7 +544,6 @@ export default function WeighInPage() {
             </table>
           </div>
         </section>
-      </div>
     </div>
   );
 }

@@ -1,0 +1,88 @@
+// ==============================================================================
+// DATOS SEMILLA / NÓMINA BASE DE DEPORTISTAS PARA INYECCIÓN
+// ==============================================================================
+
+import { DraftAthletePayload } from '@/app/actions/registrations';
+
+export const BASE_ATHLETES_ROSTER: DraftAthletePayload[] = [
+  {
+    name: 'Carlos Muñoz',
+    club_name: 'Club Judo Iquique',
+    rut_dni: '19.876.543-2',
+    category: 'Cadetes (Sub-18) Masculino -60kg',
+    gender: 'M',
+    birth_year: 2009,
+    weight: 58.5,
+    seed: 1,
+  },
+  {
+    name: 'Matías Silva',
+    club_name: 'Judo Club Alto Hospicio',
+    rut_dni: '20.123.456-7',
+    category: 'Cadetes (Sub-18) Masculino -60kg',
+    gender: 'M',
+    birth_year: 2009,
+    weight: 59.2,
+    seed: 2,
+  },
+  {
+    name: 'Diego Paredes',
+    club_name: 'Club de Judo Hiroshima',
+    rut_dni: '18.987.654-3',
+    category: 'Cadetes (Sub-18) Masculino -60kg',
+    gender: 'M',
+    birth_year: 2008,
+    weight: 57.8,
+    seed: 3,
+  },
+  {
+    name: 'Andrés Soto',
+    club_name: 'Club de Judo Hiroshima',
+    rut_dni: '19.345.678-9',
+    category: 'Cadetes (Sub-18) Masculino -60kg',
+    gender: 'M',
+    birth_year: 2009,
+    weight: 59.9,
+    seed: 4,
+  },
+  {
+    name: 'Valentina Rojas',
+    club_name: 'Club de Judo Hiroshima',
+    rut_dni: '21.456.789-0',
+    category: 'Sub-15 Femenino -48kg',
+    gender: 'F',
+    birth_year: 2012,
+    weight: 47.1,
+    seed: 1,
+  },
+  {
+    name: 'Sofía Valenzuela',
+    club_name: 'Club Judo Iquique',
+    rut_dni: '21.789.012-3',
+    category: 'Sub-15 Femenino -48kg',
+    gender: 'F',
+    birth_year: 2012,
+    weight: 46.5,
+    seed: 2,
+  },
+  {
+    name: 'Lucas Morales',
+    club_name: 'Club Judo Iquique',
+    rut_dni: '17.654.321-K',
+    category: 'Junior Masculino -73kg',
+    gender: 'M',
+    birth_year: 2005,
+    weight: 71.8,
+    seed: 1,
+  },
+  {
+    name: 'Felipe Torres',
+    club_name: 'Judo Club Alto Hospicio',
+    rut_dni: '16.543.210-8',
+    category: 'Senior Masculino -81kg',
+    gender: 'M',
+    birth_year: 2001,
+    weight: 79.4,
+    seed: 1,
+  },
+];

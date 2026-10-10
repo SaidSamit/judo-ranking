@@ -130,60 +130,22 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-12 font-sans">
-      <div className="max-w-6xl mx-auto space-y-8">
-        {/* NAVEGACIÓN SUPERIOR DE ADMINISTRACIÓN */}
-        <nav className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
-          <div className="flex items-center space-x-3">
-            <span className="text-xl font-black text-amber-400">JUDO RANKING</span>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 font-mono">
-              Fase 6 • Mesa de Tatami #{tatamiNumber}
-            </span>
+    <div className="p-6 md:p-10 max-w-7xl mx-auto space-y-6">
+      {/* CABECERA Y SELECTOR DE TATAMI */}
+      <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800/80 pb-5">
+        <div className="space-y-1">
+          <div className="flex items-center space-x-2">
+            <Monitor className="w-7 h-7 text-amber-400" />
+            <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight">
+              Cola de Combates • Tatami #{tatamiNumber}
+            </h1>
           </div>
-
-          <div className="flex items-center space-x-2 text-xs font-bold">
-            <Link
-              href="/admin/roster"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            >
-              Nómina / ETL
-            </Link>
-            <Link
-              href="/admin/weigh-in"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            >
-              Estación de Pesaje
-            </Link>
-            <Link
-              href="/admin/brackets"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition"
-            >
-              Panel del Director (Llaves)
-            </Link>
-            <Link
-              href={`/admin/tatami/${tatamiNumber}`}
-              className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-black shadow"
-            >
-              Cola Tatami #{tatamiNumber}
-            </Link>
-          </div>
-        </nav>
-
-        {/* CABECERA Y SELECTOR DE TATAMI */}
-        <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center space-x-2">
-              <Monitor className="w-8 h-8 text-amber-400" />
-              <h1 className="text-3xl font-black text-white">
-                Cola de Combates • Tatami #{tatamiNumber}
-              </h1>
-            </div>
-            <p className="text-slate-400 text-sm">
-              Secuencia oficial de combates programados. Al presionar{' '}
-              <strong className="text-amber-400">&quot;Llamar a Tatami&quot;</strong>, el sistema
-              cargará el combate directamente en la Mesa de Control para iniciar el arbitraje.
-            </p>
-          </div>
+          <p className="text-slate-400 text-sm">
+            Secuencia oficial de combates programados. Al presionar{' '}
+            <strong className="text-amber-400">&quot;Llamar a Tatami&quot;</strong>, el sistema
+            cargará el combate directamente en la Mesa de Control para iniciar el arbitraje.
+          </p>
+        </div>
 
           {/* Selector de Tatami Físico */}
           <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs font-bold">
@@ -356,7 +318,6 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
             })}
           </div>
         </section>
-      </div>
     </div>
   );
 }
