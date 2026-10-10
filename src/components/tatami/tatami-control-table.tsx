@@ -32,6 +32,7 @@ import {
   getLocalDB,
   LocalMatch,
 } from '@/lib/offline/db';
+import { finishMatchAndPropagateWinnerAction } from '@/app/actions/matches';
 
 interface TatamiControlTableProps {
   initialMatch: LocalMatch;
@@ -306,7 +307,7 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
     [broadcastState]
   );
 
-  // Al finalizar el combate actual (FINISHED), buscar y preparar el siguiente
+  // Al finalizar el combate actual (FINISHED), sellar, propagar ganador en el árbol y buscar el siguiente
   useEffect(() => {
     if (matchStatus === 'FINISHED') {
       let isSubscribed = true;
@@ -315,27 +316,93 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       saveMatchLocally({
         ...currentMatch,
         status: 'FINISHED',
-        winner_id: projection.winner ? (projection.winner === 'WHITE' ? currentMatch.white_athlete_name : currentMatch.blue_athlete_name) : null,
+        winner_id: projection.winner
+          ? projection.winner === 'WHITE'
+            ? currentMatch.white_athlete_name
+            : currentMatch.blue_athlete_name
+          : null,
         win_reason: projection.win_reason,
         updated_at: new Date().toISOString(),
       });
 
-      // 2. Buscar próximo combate en la cola
-      fetchNextScheduledMatch(currentMatch.tatami_number, currentMatch.id).then((next) => {
-        if (!isSubscribed) return;
-        if (next) {
-          setNextScheduledMatch(next);
-          setAutoAdvanceCountdown(4); // Cuenta regresiva de 4 segundos
-        } else {
-          setIsQueueEmpty(true);
-        }
-      });
+      // 2. Ejecutar Server Action para sellar en Supabase y PROPAGAR AL SIGUIENTE COMBATE (next_match_id)
+      if (projection.winner) {
+        finishMatchAndPropagateWinnerAction({
+          matchId: currentMatch.id,
+          winnerColor: projection.winner as 'WHITE' | 'BLUE',
+          winReason: projection.win_reason || 'POINTS',
+          whiteScore: projection.white_score,
+          blueScore: projection.blue_score,
+        })
+          .then(async (propResult) => {
+            if (!isSubscribed) return;
+            // Si hubo propagación exitosa hacia un next_match_id, actualizar de inmediato en IndexedDB local
+            if (propResult.success && propResult.nextMatchId) {
+              try {
+                const db = await getLocalDB();
+                const targetLocal = await db.get('matches', propResult.nextMatchId);
+                if (targetLocal) {
+                  const slot = propResult.nextMatchSlot || 'WHITE';
+                  if (slot === 'WHITE') {
+                    targetLocal.white_athlete_name = propResult.winnerName;
+                    targetLocal.white_club_name = propResult.winnerClub || targetLocal.white_club_name;
+                    targetLocal.white_athlete_id = propResult.winnerId;
+                  } else {
+                    targetLocal.blue_athlete_name = propResult.winnerName;
+                    targetLocal.blue_club_name = propResult.winnerClub || targetLocal.blue_club_name;
+                    targetLocal.blue_athlete_id = propResult.winnerId;
+                  }
+
+                  const isWhiteSet =
+                    targetLocal.white_athlete_name && targetLocal.white_athlete_name !== 'Por definir';
+                  const isBlueSet =
+                    targetLocal.blue_athlete_name && targetLocal.blue_athlete_name !== 'Por definir';
+
+                  if (isWhiteSet && isBlueSet) {
+                    targetLocal.status = 'SCHEDULED';
+                  }
+
+                  await db.put('matches', targetLocal);
+                }
+              } catch (err) {
+                console.warn('[Queue] Error actualizando avance en IndexedDB:', err);
+              }
+            }
+          })
+          .catch((err) => {
+            console.error('[Queue] Error ejecutando finishMatchAndPropagateWinnerAction:', err);
+          })
+          .finally(() => {
+            if (!isSubscribed) return;
+            // 3. Buscar próximo combate en la cola (después de haber propagado)
+            fetchNextScheduledMatch(currentMatch.tatami_number, currentMatch.id).then((next) => {
+              if (!isSubscribed) return;
+              if (next) {
+                setNextScheduledMatch(next);
+                setAutoAdvanceCountdown(4); // Cuenta regresiva de 4 segundos
+              } else {
+                setIsQueueEmpty(true);
+              }
+            });
+          });
+      } else {
+        // Fallback si no hubo ganador explícito
+        fetchNextScheduledMatch(currentMatch.tatami_number, currentMatch.id).then((next) => {
+          if (!isSubscribed) return;
+          if (next) {
+            setNextScheduledMatch(next);
+            setAutoAdvanceCountdown(4);
+          } else {
+            setIsQueueEmpty(true);
+          }
+        });
+      }
 
       return () => {
         isSubscribed = false;
       };
     }
-  }, [currentMatch, fetchNextScheduledMatch, matchStatus, projection.win_reason, projection.winner]);
+  }, [currentMatch, fetchNextScheduledMatch, matchStatus, projection.blue_score, projection.white_score, projection.win_reason, projection.winner]);
 
   // Manejo de la cuenta regresiva para el avance automático
   useEffect(() => {

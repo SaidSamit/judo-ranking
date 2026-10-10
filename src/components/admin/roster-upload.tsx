@@ -74,28 +74,7 @@ export function RosterUpload({
   const currentYear = new Date().getFullYear();
 
   // 1. ESTADO BORRADOR PRINCIPAL (FUENTE LOCAL DE VERDAD)
-  const [draftAthletes, setDraftAthletes] = useState<DraftAthlete[]>([
-    {
-      id: 'demo-1',
-      rut_dni: '19.876.543-2',
-      name: 'Carlos Muñoz',
-      club_name: 'Club Judo Iquique',
-      birth_year: 2009,
-      gender: 'M',
-      category: 'Cadetes (Sub-18) Masculino -60kg',
-      seed: 1,
-    },
-    {
-      id: 'demo-2',
-      rut_dni: '20.123.456-7',
-      name: 'Matías Silva',
-      club_name: 'Judo Club Alto Hospicio',
-      birth_year: 2009,
-      gender: 'M',
-      category: 'Cadetes (Sub-18) Masculino -60kg',
-      seed: 2,
-    },
-  ]);
+  const [draftAthletes, setDraftAthletes] = useState<DraftAthlete[]>([]);
 
   // 2. FORMULARIO MANUAL ÁGIL (RUT ES EL CAMPO PRINCIPAL Y OBLIGATORIO)
   const [formRut, setFormRut] = useState('');

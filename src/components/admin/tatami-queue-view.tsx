@@ -18,6 +18,8 @@ import {
   Tv,
   ArrowRight,
   Sparkles,
+  ArrowLeft,
+  RefreshCw,
 } from 'lucide-react';
 import { getTatamiQueueMatchesAction } from '@/app/actions/brackets';
 
@@ -37,83 +39,54 @@ interface QueueMatch {
 interface TatamiQueueViewProps {
   tatamiNumber: number;
   rawId: string;
+  tournamentId?: string;
+  tournamentName?: string;
+  tatamiCount?: number;
 }
 
-export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
+export function TatamiQueueView({
+  tatamiNumber,
+  rawId,
+  tournamentId,
+  tournamentName,
+  tatamiCount = 2,
+}: TatamiQueueViewProps) {
   const router = useRouter();
   const [matches, setMatches] = useState<QueueMatch[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Cargar combates asignados al tatami
-  useEffect(() => {
-    async function loadMatches() {
-      setLoading(true);
-      try {
-        const res = await getTatamiQueueMatchesAction(tatamiNumber);
-        if (res.success && res.matches.length > 0) {
-          const mapped: QueueMatch[] = res.matches.map((m: any) => ({
-            id: m.id,
-            match_number: m.match_number,
-            category_name: m.category?.name || 'Categoría Oficial',
-            round_name: m.round || 'Ronda Oficial',
-            white_athlete_name: m.white_athlete
-              ? `${m.white_athlete.first_name} ${m.white_athlete.last_name}`
-              : 'Por definir',
-            white_club_name: m.white_athlete?.club?.name || 'Independiente',
-            blue_athlete_name: m.blue_athlete
-              ? `${m.blue_athlete.first_name} ${m.blue_athlete.last_name}`
-              : 'Por definir',
-            blue_club_name: m.blue_athlete?.club?.name || 'Independiente',
-            status: m.status || 'SCHEDULED',
-          }));
-          setMatches(mapped);
-        } else {
-          // Datos iniciales de demostración para el tatami si aún no hay sorteos en BD
-          setMatches([
-            {
-              id: '10000000-0000-0000-0000-000000000001',
-              match_number: 1,
-              category_name: 'Cadetes (Sub-18) Masculino -60kg',
-              round_name: 'Cuartos de Final - Llave #1',
-              white_athlete_name: 'Carlos Muñoz',
-              white_club_name: 'Club de Judo Hiroshima',
-              blue_athlete_name: 'Matías Silva',
-              blue_club_name: 'Judo Club Alto Hospicio',
-              status: 'SCHEDULED',
-            },
-            {
-              id: '10000000-0000-0000-0000-000000000002',
-              match_number: 2,
-              category_name: 'Cadetes (Sub-18) Masculino -60kg',
-              round_name: 'Cuartos de Final - Llave #2',
-              white_athlete_name: 'Joaquín Tapia',
-              white_club_name: 'Club Dragones Arica',
-              blue_athlete_name: 'Franco Oyarzún',
-              blue_club_name: 'Judo Iquique',
-              status: 'SCHEDULED',
-            },
-            {
-              id: '10000000-0000-0000-0000-000000000003',
-              match_number: 3,
-              category_name: 'Cadetes (Sub-18) Masculino -60kg',
-              round_name: 'Semifinales - Llave #1',
-              white_athlete_name: 'Por definir (Ganador #1)',
-              white_club_name: 'Pendiente',
-              blue_athlete_name: 'Por definir (Ganador #2)',
-              blue_club_name: 'Pendiente',
-              status: 'SCHEDULED',
-            },
-          ]);
-        }
-      } catch (err: any) {
-        console.error(err);
-      } finally {
-        setLoading(false);
+  // Cargar combates asignados al tatami en este torneo
+  const loadMatches = async () => {
+    setLoading(true);
+    try {
+      const res = await getTatamiQueueMatchesAction(tatamiNumber, tournamentId);
+      if (res.success && res.matches.length > 0) {
+        const mapped: QueueMatch[] = res.matches.map((m: any) => ({
+          id: m.id,
+          match_number: m.match_number,
+          category_name: m.category?.name || 'Categoría Oficial',
+          round_name: m.round_name || m.round || 'Ronda Oficial',
+          white_athlete_name: m.white_athlete_name || 'Por definir',
+          white_club_name: m.white_club_name || 'Independiente',
+          blue_athlete_name: m.blue_athlete_name || 'Por definir',
+          blue_club_name: m.blue_club_name || 'Independiente',
+          status: m.status || 'SCHEDULED',
+        }));
+        setMatches(mapped);
+      } else {
+        setMatches([]);
       }
+    } catch (err: any) {
+      console.error(err);
+      setMatches([]);
+    } finally {
+      setLoading(false);
     }
+  };
 
+  useEffect(() => {
     loadMatches();
-  }, [tatamiNumber]);
+  }, [tatamiNumber, tournamentId]);
 
   // Métricas de la cola del tatami
   const stats = useMemo(() => {
@@ -124,7 +97,7 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
     return { total, scheduled, ongoing, finished };
   }, [matches]);
 
-  // Manejador: Llamar a Tatami (Redirigir al motor de arbitraje de la Fase 3)
+  // Manejador: Llamar a Tatami (Redirigir al motor de arbitraje)
   const handleCallToTatami = (matchId: string) => {
     router.push(`/tatami/${matchId}`);
   };
@@ -134,6 +107,16 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
       {/* CABECERA Y SELECTOR DE TATAMI */}
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800/80 pb-5">
         <div className="space-y-1">
+          {tournamentId && (
+            <Link
+              href={`/admin/tournaments/${tournamentId}?tab=brackets`}
+              className="inline-flex items-center space-x-1.5 text-xs text-amber-400 hover:text-amber-300 font-bold transition mb-1"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Volver a {tournamentName || 'Campeonato'}</span>
+            </Link>
+          )}
+
           <div className="flex items-center space-x-2">
             <Monitor className="w-7 h-7 text-amber-400" />
             <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight">
@@ -147,74 +130,66 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
           </p>
         </div>
 
-          {/* Selector de Tatami Físico */}
-          <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs font-bold">
+        {/* Selector Dinámico de Tatamis según tatamiCount del campeonato */}
+        <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs font-bold overflow-x-auto">
+          {Array.from({ length: tatamiCount }, (_, i) => i + 1).map((num) => (
             <Link
-              href="/admin/tatami/1"
-              className={`px-3 py-1.5 rounded-lg transition ${
-                tatamiNumber === 1
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-white'
+              key={num}
+              href={`/admin/tatami/${num}`}
+              className={`px-3.5 py-1.5 rounded-lg transition ${
+                tatamiNumber === num
+                  ? 'bg-amber-500 text-slate-950 font-black shadow'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
             >
-              Tatami 1
+              Tatami {num}
             </Link>
-            <Link
-              href="/admin/tatami/2"
-              className={`px-3 py-1.5 rounded-lg transition ${
-                tatamiNumber === 2
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Tatami 2
-            </Link>
-            <Link
-              href="/admin/tatami/3"
-              className={`px-3 py-1.5 rounded-lg transition ${
-                tatamiNumber === 3
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Tatami 3
-            </Link>
-          </div>
-        </header>
+          ))}
+        </div>
+      </header>
 
-        {/* MÉTRICAS DE LA COLA */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-400 block font-bold">Total Combates</span>
-            <span className="text-2xl font-black text-white mt-1 block">{stats.total}</span>
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-blue-400 block font-bold">Programados (Cola)</span>
-            <span className="text-2xl font-black text-blue-400 mt-1 block">
-              {stats.scheduled}
+      {/* MÉTRICAS DE LA COLA */}
+      <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-xs text-slate-400 block font-bold">Total Combates</span>
+          <span className="text-2xl font-black text-white mt-1 block">{stats.total}</span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-xs text-blue-400 block font-bold">Programados (Cola)</span>
+          <span className="text-2xl font-black text-blue-400 mt-1 block">
+            {stats.scheduled}
+          </span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-xs text-amber-400 block font-bold">En Curso (Tatami)</span>
+          <span className="text-2xl font-black text-amber-400 mt-1 block">{stats.ongoing}</span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-xs text-emerald-400 block font-bold">Finalizados</span>
+          <span className="text-2xl font-black text-emerald-400 mt-1 block">
+            {stats.finished}
+          </span>
+        </div>
+      </section>
+
+      {/* LISTA SECUENCIAL DE COMBATES EN COLA */}
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+        <div className="p-4 bg-slate-950/70 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Swords className="w-5 h-5 text-amber-400" />
+            <span className="text-base font-bold text-white">
+              Secuencia Cronológica del Tatami #{tatamiNumber}
             </span>
           </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-amber-400 block font-bold">En Curso (Tatami)</span>
-            <span className="text-2xl font-black text-amber-400 mt-1 block">{stats.ongoing}</span>
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-emerald-400 block font-bold">Finalizados</span>
-            <span className="text-2xl font-black text-emerald-400 mt-1 block">
-              {stats.finished}
-            </span>
-          </div>
-        </section>
-
-        {/* LISTA SECUENCIAL DE COMBATES EN COLA */}
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-          <div className="p-4 bg-slate-950/70 border-b border-slate-800 flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <Swords className="w-5 h-5 text-amber-400" />
-              <span className="text-base font-bold text-white">
-                Secuencia Cronológica del Tatami
-              </span>
-            </div>
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={loadMatches}
+              disabled={loading}
+              className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Actualizar</span>
+            </button>
             <Link
               href={`/scoreboard/tatami-${tatamiNumber}`}
               target="_blank"
@@ -224,7 +199,30 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
               <span>Abrir Marcador TV (Realtime)</span>
             </Link>
           </div>
+        </div>
 
+        {matches.length === 0 ? (
+          <div className="p-12 text-center space-y-3 bg-slate-950/40">
+            <Swords className="w-10 h-10 mx-auto text-slate-600" />
+            <p className="text-sm font-bold text-white">
+              No hay combates programados en la cola del Tatami #{tatamiNumber}
+            </p>
+            <p className="text-xs text-slate-400 max-w-md mx-auto">
+              Las llaves de las categorías asignadas a este tatami aún no han sido generadas o no tienen combates programados.
+            </p>
+            {tournamentId && (
+              <div className="pt-2">
+                <Link
+                  href={`/admin/tournaments/${tournamentId}?tab=brackets`}
+                  className="inline-flex items-center space-x-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl transition shadow"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Ir a Sorteo y Generación de Llaves</span>
+                </Link>
+              </div>
+            )}
+          </div>
+        ) : (
           <div className="divide-y divide-slate-800">
             {matches.map((match, idx) => {
               const isNext = idx === 0 && match.status === 'SCHEDULED';
@@ -317,7 +315,8 @@ export function TatamiQueueView({ tatamiNumber, rawId }: TatamiQueueViewProps) {
               );
             })}
           </div>
-        </section>
+        )}
+      </section>
     </div>
   );
 }

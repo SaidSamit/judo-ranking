@@ -15,6 +15,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Trophy,
   Plus,
@@ -43,6 +44,7 @@ import {
 import { BASE_ATHLETES_ROSTER } from '@/lib/data/roster-data';
 
 export default function TournamentsPage() {
+  const router = useRouter();
   const [tournaments, setTournaments] = useState<TournamentItem[]>([]);
   const [activeTournamentId, setActiveTournamentId] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -106,8 +108,9 @@ export default function TournamentsPage() {
         setFormName('');
         setFeedback({
           type: 'success',
-          text: res.message,
+          text: `${res.message} Entrando al panel del campeonato...`,
         });
+        router.push(`/admin/tournaments/${res.tournament.id}`);
       } else {
         setFeedback({
           type: 'error',
@@ -348,54 +351,15 @@ export default function TournamentsPage() {
                 </div>
               </div>
 
-              {/* Botón de inyección de atletas */}
-              <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTargetTournament(tour);
-                    setIsInjectModalOpen(true);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/80 text-xs font-bold transition flex items-center space-x-1.5"
+              {/* Botón Maestro: Acceso Directo al Dashboard Aislado */}
+              <div className="pt-2 border-t border-slate-800/80">
+                <Link
+                  href={`/admin/tournaments/${tour.id}`}
+                  className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center justify-center space-x-2 shadow-md group"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Inyectar Deportistas</span>
-                </button>
-
-                {/* Acciones directas del campeonato */}
-                <div className="flex items-center space-x-1.5">
-                  <Link
-                    href="/admin/roster"
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold border border-slate-700 transition"
-                    title="Acreditación / Nómina"
-                  >
-                    Nómina
-                  </Link>
-
-                  <Link
-                    href="/admin/weigh-in"
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold border border-slate-700 transition"
-                    title="Estación de Pesaje"
-                  >
-                    Pesaje
-                  </Link>
-
-                  <Link
-                    href="/admin/brackets"
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold border border-slate-700 transition"
-                    title="Visor de Llaves"
-                  >
-                    Llaves
-                  </Link>
-
-                  <Link
-                    href="/admin/credentials"
-                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 transition"
-                    title="Credenciales PIN"
-                  >
-                    <KeyRound className="w-3.5 h-3.5" />
-                  </Link>
-                </div>
+                  <span>Gestionar Campeonato</span>
+                  <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                </Link>
               </div>
             </div>
           ))}

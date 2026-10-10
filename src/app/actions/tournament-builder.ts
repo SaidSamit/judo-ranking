@@ -285,46 +285,62 @@ export async function getTournamentCredentialsAction(
 
     if (!tourError && tourData) {
       const config = (tourData.config as any) || {};
-      const savedCredentials = (config.tatami_credentials as TatamiCredential[]) || [];
+      let savedCredentials = (config.tatami_credentials as TatamiCredential[]) || [];
+      const tatamiCount = config.tatami_count || 3;
 
-      if (savedCredentials.length > 0) {
-        // Enlazar con telemetría en tiempo real de stations
-        const enrichedCredentials = savedCredentials.map((cred) => {
-          const matchStation = stationsData?.find((s) => s.slug === cred.station_slug);
-          return {
-            ...cred,
-            is_active: matchStation?.is_active ?? cred.is_active,
-            last_seen_at: matchStation?.last_seen_at ?? cred.last_seen_at,
-          };
-        });
-
-        const tourDetails: TournamentDetails = {
-          id: tourData.id,
-          organization_id: tourData.organization_id,
-          name: tourData.name,
-          status: tourData.status,
-          tatami_count: config.tatami_count || enrichedCredentials.length,
-          location: tourData.location,
-          start_date: tourData.start_date,
-          end_date: tourData.end_date,
-          credentials_generated_at: config.credentials_generated_at,
-        };
-
-        return {
-          success: true,
-          tournament: tourDetails,
-          credentials: enrichedCredentials,
-        };
+      if (savedCredentials.length === 0) {
+        for (let i = 1; i <= tatamiCount; i++) {
+          savedCredentials.push({
+            tatami_number: i,
+            station_slug: `tatami-${i}`,
+            station_name: `Mesa de Control - Tatami ${i}`,
+            pin: String(100000 + i * 23456).slice(0, 6),
+            type: 'TATAMI_TABLE',
+            is_active: true,
+            created_at: new Date().toISOString(),
+          });
+        }
       }
+
+      // Enlazar con telemetría en tiempo real de stations
+      const enrichedCredentials = savedCredentials.map((cred) => {
+        const matchStation = stationsData?.find((s) => s.slug === cred.station_slug);
+        return {
+          ...cred,
+          is_active: matchStation?.is_active ?? cred.is_active,
+          last_seen_at: matchStation?.last_seen_at ?? cred.last_seen_at,
+        };
+      });
+
+      const tourDetails: TournamentDetails = {
+        id: tourData.id,
+        organization_id: tourData.organization_id,
+        name: tourData.name,
+        status: tourData.status,
+        tatami_count: tatamiCount,
+        location: tourData.location,
+        start_date: tourData.start_date,
+        end_date: tourData.end_date,
+        credentials_generated_at: config.credentials_generated_at || new Date().toISOString(),
+      };
+
+      return {
+        success: true,
+        tournament: tourDetails,
+        credentials: enrichedCredentials,
+      };
     }
   } catch (err) {
     console.warn('Error consultando Supabase para credenciales, retornando datos de respaldo:', err);
   }
 
-  // Si no hay datos en la base o falló la conexión, retornar respaldo en memoria
+  // Si no hay datos en la base o falló la conexión, retornar respaldo en memoria adaptado
   return {
     success: true,
-    tournament: fallbackTournamentStore.tournament,
+    tournament: {
+      ...fallbackTournamentStore.tournament,
+      id: tournamentId,
+    },
     credentials: fallbackTournamentStore.credentials,
   };
 }

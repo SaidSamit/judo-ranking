@@ -115,6 +115,29 @@ export async function getTournamentsAction(): Promise<{
         tournaments: mapped,
         activeTournamentId: active,
       };
+    } else if (!tourError && (!tournamentsData || tournamentsData.length === 0)) {
+      // Si la base de datos no tiene torneos, persistimos el torneo inicial en Supabase
+      const defaultTour = inMemoryTournaments[0];
+      const nowIso = new Date().toISOString();
+      await supabase.from('tournaments').upsert(
+        {
+          id: defaultTour.id,
+          organization_id: 'a0000000-0000-0000-0000-000000000001',
+          name: defaultTour.name,
+          status: 'ACTIVE',
+          location: defaultTour.location,
+          start_date: defaultTour.start_date,
+          end_date: defaultTour.end_date,
+          config: {
+            tatami_count: defaultTour.tatami_count,
+            score_types: ['IPPON', 'WAZA_ARI', 'YUKO'],
+            best_of_limit: 6,
+          },
+          created_at: nowIso,
+          updated_at: nowIso,
+        },
+        { onConflict: 'id' }
+      );
     }
   } catch (err) {
     console.warn('Operando con respaldo en memoria de torneos:', err);
@@ -342,3 +365,69 @@ export async function setActiveTournamentAction(
     message: 'Campeonato activado correctamente como torneo oficial en curso.',
   };
 }
+
+/**
+ * Obtiene los detalles específicos de un campeonato aislado por su ID.
+ */
+export async function getTournamentDetailsAction(tournamentId: string): Promise<{
+  success: boolean;
+  tournament?: TournamentItem;
+  error?: string;
+}> {
+  if (!tournamentId) {
+    return { success: false, error: 'ID de campeonato inválido' };
+  }
+
+  try {
+    const supabase = createAdminClient();
+
+    const { data: tourData, error: tourErr } = await supabase
+      .from('tournaments')
+      .select('id, name, status, location, start_date, end_date, config, created_at')
+      .eq('id', tournamentId)
+      .maybeSingle();
+
+    if (!tourErr && tourData) {
+      // Conteo de atletas registrados estrictamente en este torneo
+      const { data: regData } = await supabase
+        .from('tournament_registrations')
+        .select('id')
+        .eq('tournament_id', tournamentId);
+
+      // Categorías estrictas de este torneo
+      const { data: catData } = await supabase
+        .from('categories')
+        .select('id')
+        .eq('tournament_id', tournamentId);
+
+      const config = (tourData.config as any) || {};
+
+      const mapped: TournamentItem = {
+        id: tourData.id,
+        name: tourData.name,
+        status: tourData.status,
+        location: tourData.location || 'Sede Principal',
+        start_date: tourData.start_date,
+        end_date: tourData.end_date,
+        tatami_count: config.tatami_count || 3,
+        athlete_count: regData ? regData.length : (config.injected_athletes_count || 0),
+        categories_count: catData ? catData.length : 0,
+        is_active: tourData.status === 'ACTIVE',
+        created_at: tourData.created_at,
+      };
+
+      return { success: true, tournament: mapped };
+    }
+  } catch (err: any) {
+    console.warn('Error consultando Supabase para detalle de torneo:', err.message);
+  }
+
+  // Buscar en almacén de memoria
+  const memoryMatch = inMemoryTournaments.find((t) => t.id === tournamentId);
+  if (memoryMatch) {
+    return { success: true, tournament: memoryMatch };
+  }
+
+  return { success: false, error: 'Campeonato no encontrado' };
+}
+

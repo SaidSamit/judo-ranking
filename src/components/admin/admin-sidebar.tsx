@@ -5,8 +5,10 @@
 // CARACTERÍSTICAS DE DISEÑO:
 // - Estilo Enterprise / SaaS moderno (Linear, Vercel, Smoothcomp).
 // - Modo expandible y colapsable con persistencia local.
-// - Menú lateral organizado por módulos: Registro, Dirección, Tatamis y Transmisión.
-// - Indicador de estado en tiempo real y perfil de la estación central.
+// - Menú lateral enfocado y limpio: Ningún módulo específico (pesaje, nómina,
+//   llaves, tatamis) aparece de forma global desacoplada.
+// - Todo el flujo de un torneo ocurre estrictamente dentro del campeonato
+//   seleccionado (/admin/tournaments/[id]).
 // - Soporte responsive con menú hamburguesa para tablets y dispositivos móviles.
 //
 // ==============================================================================
@@ -17,24 +19,15 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  Users,
-  Scale,
   Trophy,
-  Swords,
-  Monitor,
-  Tv,
   ChevronLeft,
   ChevronRight,
   Menu,
   X,
-  PlayCircle,
-  Activity,
-  Layers,
   Shield,
-  Clock,
-  ExternalLink,
-  KeyRound,
   LogOut,
+  ArrowLeft,
+  ExternalLink,
 } from 'lucide-react';
 
 interface NavItem {
@@ -72,92 +65,20 @@ export function AdminSidebar() {
     localStorage.setItem('judo_sidebar_collapsed', String(next));
   };
 
-  // Secciones de navegación del torneo
+  const isInsideTournament =
+    pathname.startsWith('/admin/tournaments/') && pathname !== '/admin/tournaments';
+
+  // Secciones de navegación del sidebar (Limpio y aislado por campeonato)
   const navSections: NavSection[] = [
     {
-      title: 'Competición & Nómina',
+      title: 'Competición Oficial',
       items: [
         {
           label: 'Campeonatos',
           href: '/admin/tournaments',
           icon: Trophy,
-          badge: 'Gestión',
+          badge: 'Principal',
           badgeColor: 'bg-amber-950/80 text-amber-400 border-amber-800',
-        },
-        {
-          label: 'Acreditación & Nómina',
-          href: '/admin/roster',
-          icon: Users,
-          badge: 'ETL',
-          badgeColor: 'bg-emerald-950/80 text-emerald-400 border-emerald-800',
-        },
-        {
-          label: 'Estación de Pesaje',
-          href: '/admin/weigh-in',
-          icon: Scale,
-          badge: 'Fase 6',
-          badgeColor: 'bg-amber-950/80 text-amber-400 border-amber-800',
-        },
-        {
-          label: 'Panel del Director (Llaves)',
-          href: '/admin/brackets',
-          icon: Trophy,
-          badge: 'Sorteo',
-          badgeColor: 'bg-blue-950/80 text-blue-400 border-blue-800',
-        },
-        {
-          label: 'Credenciales & PINs',
-          href: '/admin/credentials',
-          icon: KeyRound,
-          badge: 'Auth',
-          badgeColor: 'bg-purple-950/80 text-purple-400 border-purple-800',
-        },
-      ],
-    },
-    {
-      title: 'Colas de Tatamis',
-      items: [
-        {
-          label: 'Tatami 1 (Cola)',
-          href: '/admin/tatami/1',
-          icon: Swords,
-        },
-        {
-          label: 'Tatami 2 (Cola)',
-          href: '/admin/tatami/2',
-          icon: Swords,
-        },
-        {
-          label: 'Tatami 3 (Cola)',
-          href: '/admin/tatami/3',
-          icon: Swords,
-        },
-      ],
-    },
-    {
-      title: 'Mesa & Pantallas en Vivo',
-      items: [
-        {
-          label: 'Mesa de Arbitraje (Tatami 1)',
-          href: '/tatami/1',
-          icon: PlayCircle,
-          isExternal: false,
-        },
-        {
-          label: 'Marcador TV (Tatami 1)',
-          href: '/scoreboard/tatami-1',
-          icon: Tv,
-          isExternal: true,
-          badge: 'TV',
-          badgeColor: 'bg-purple-950/80 text-purple-400 border-purple-800',
-        },
-        {
-          label: 'Marcador TV (Tatami 2)',
-          href: '/scoreboard/tatami-2',
-          icon: Tv,
-          isExternal: true,
-          badge: 'TV',
-          badgeColor: 'bg-purple-950/80 text-purple-400 border-purple-800',
         },
       ],
     },
@@ -239,8 +160,8 @@ export function AdminSidebar() {
           </div>
         )}
 
-        {/* NAVEGACIÓN PRINCIPAL CON SCROLL SUAVE */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+        {/* NAVEGACIÓN PRINCIPAL */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-4 scrollbar-thin scrollbar-thumb-slate-800">
           {navSections.map((section, sIdx) => (
             <div key={sIdx} className="space-y-1">
               {!isCollapsed && (
@@ -254,7 +175,7 @@ export function AdminSidebar() {
                   const Icon = item.icon;
                   const isActive =
                     pathname === item.href ||
-                    (item.href !== '/admin/roster' && pathname.startsWith(item.href));
+                    pathname.startsWith(item.href);
 
                   return (
                     <Link
@@ -309,6 +230,28 @@ export function AdminSidebar() {
               </div>
             </div>
           ))}
+
+          {/* INDICADOR CONTEXTUAL: SI EL USUARIO ESTÁ GESTIONANDO UN CAMPEONATO */}
+          {isInsideTournament && !isCollapsed && (
+            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-2xl space-y-2 mt-4">
+              <div className="flex items-center space-x-2 text-amber-400 text-xs font-black">
+                <Trophy className="w-3.5 h-3.5" />
+                <span>Modo Campeonato</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Nómina, pesaje, llaves de sorteo y tatamis están concentrados en las pestañas de este campeonato.
+              </p>
+              <div className="pt-1">
+                <Link
+                  href="/admin/tournaments"
+                  className="inline-flex items-center space-x-1.5 text-xs text-amber-400 hover:text-amber-300 font-bold transition"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Volver a Campeonatos</span>
+                </Link>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* PIE DEL SIDEBAR / PERFIL DE LA ESTACIÓN */}

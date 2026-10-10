@@ -39,20 +39,11 @@ export function AdminTopHeader() {
 
   // Generar migas de pan según la ruta
   const getBreadcrumbs = () => {
+    if (pathname.startsWith('/admin/tournaments/') && pathname !== '/admin/tournaments') {
+      return { section: 'Campeonatos', page: 'Gestión del Torneo' };
+    }
     if (pathname.includes('/admin/tournaments')) {
       return { section: 'Competición', page: 'Gestión de Campeonatos' };
-    }
-    if (pathname.includes('/admin/roster')) {
-      return { section: 'Competición', page: 'Acreditación & Nómina' };
-    }
-    if (pathname.includes('/admin/weigh-in')) {
-      return { section: 'Pesaje Oficial', page: 'Estación de Pesaje' };
-    }
-    if (pathname.includes('/admin/brackets')) {
-      return { section: 'Dirección', page: 'Sorteo & Visor de Llaves' };
-    }
-    if (pathname.includes('/admin/credentials')) {
-      return { section: 'Seguridad', page: 'Aprovisionamiento & Credenciales PIN' };
     }
     if (pathname.includes('/admin/tatami')) {
       const tatamiNum = pathname.split('/').pop() || '1';

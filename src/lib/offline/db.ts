@@ -29,6 +29,10 @@ export interface LocalMatch {
   current_time_seconds: number;
   winner_id?: string | null;
   win_reason?: string | null;
+  white_athlete_id?: string | null;
+  blue_athlete_id?: string | null;
+  next_match_id?: string | null;
+  next_match_slot?: 'WHITE' | 'BLUE' | null;
   updated_at: string;
 }
 

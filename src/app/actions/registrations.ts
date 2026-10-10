@@ -59,6 +59,62 @@ export async function confirmRegistrationsAction(
     const supabase = createAdminClient();
 
     // ========================================================================
+    // 0. ASEGURAR INTEGRIDAD REFERENCIAL (ORGANIZACIÓN Y TORNEO)
+    // ========================================================================
+    // a. Asegurar Organización
+    const { data: orgData } = await supabase
+      .from('organizations')
+      .select('id')
+      .eq('id', organizationId)
+      .maybeSingle();
+
+    if (!orgData) {
+      await supabase.from('organizations').upsert(
+        {
+          id: organizationId,
+          name: 'Asociación Regional de Judo Tarapacá',
+          slug: 'judo-tarapaca',
+        },
+        { onConflict: 'id' }
+      );
+    }
+
+    // b. Asegurar Torneo en la tabla 'tournaments' de Supabase
+    const { data: tourData } = await supabase
+      .from('tournaments')
+      .select('id, name')
+      .eq('id', tournamentId)
+      .maybeSingle();
+
+    if (!tourData) {
+      const nowIso = new Date().toISOString();
+      const { error: tourInsertErr } = await supabase.from('tournaments').upsert(
+        {
+          id: tournamentId,
+          organization_id: organizationId,
+          name: 'Torneo Regional Iquique Open 2026',
+          status: 'ACTIVE',
+          location: 'Polideportivo Central Iquique',
+          start_date: nowIso.split('T')[0],
+          end_date: nowIso.split('T')[0],
+          config: {
+            tatami_count: 3,
+            score_types: ['IPPON', 'WAZA_ARI', 'YUKO'],
+            best_of_limit: 6,
+          },
+          created_at: nowIso,
+          updated_at: nowIso,
+        },
+        { onConflict: 'id' }
+      );
+
+      if (tourInsertErr) {
+        console.error('[confirmRegistrationsAction] Error aprovisionando torneo:', tourInsertErr.message);
+        throw new Error(`Error aprovisionando campeonato en la base de datos: ${tourInsertErr.message}`);
+      }
+    }
+
+    // ========================================================================
     // 1. RESOLVER O CREAR CATEGORÍAS
     // ========================================================================
     const uniqueCategoryNames = Array.from(
@@ -86,21 +142,33 @@ export async function confirmRegistrationsAction(
     if (missingCategoryNames.length > 0) {
       const categoriesToInsert = missingCategoryNames.map((catName) => {
         const lower = catName.toLowerCase();
-        const ageGroup = lower.includes('infantil')
-          ? 'Infantil'
-          : lower.includes('junior')
-          ? 'Junior'
-          : lower.includes('senior')
-          ? 'Senior'
-          : 'Cadetes';
+        const isFemale =
+          lower.includes('femenin') ||
+          lower.includes('damas') ||
+          lower.includes('mujeres');
+        const gender = isFemale ? 'F' : 'M';
+
+        let ageGroup = 'Cadetes';
+        if (lower.includes('sub-11') || lower.includes('sub 11')) ageGroup = 'Sub-11';
+        else if (lower.includes('sub-13') || lower.includes('sub 13')) ageGroup = 'Sub-13';
+        else if (lower.includes('sub-15') || lower.includes('sub 15')) ageGroup = 'Sub-15';
+        else if (lower.includes('cadet') || lower.includes('sub-18') || lower.includes('sub 18')) ageGroup = 'Cadetes';
+        else if (lower.includes('junior') || lower.includes('sub-21') || lower.includes('sub 21')) ageGroup = 'Junior';
+        else if (lower.includes('senior') || lower.includes('adulto')) ageGroup = 'Senior';
+        else if (lower.includes('master')) ageGroup = 'Master';
+
+        // Detectar peso máximo si está en el nombre (ej: -52kg, -60kg)
+        const weightMatch = catName.match(/([+-]?\d+(?:\.\d+)?)\s*kg/i);
+        const maxWeight = weightMatch ? parseFloat(weightMatch[1].replace('+', '')) : null;
 
         return {
           organization_id: organizationId,
           tournament_id: tournamentId,
           name: catName,
           age_group: ageGroup,
-          gender: 'M',
-          match_duration_seconds: 240,
+          gender: gender,
+          max_weight: maxWeight,
+          match_duration_seconds: ageGroup.startsWith('Sub-1') ? 180 : 240,
           is_official: true,
         };
       });
@@ -111,6 +179,7 @@ export async function confirmRegistrationsAction(
         .select('id, name');
 
       if (catInsertError) {
+        console.error('[confirmRegistrationsAction] Error insertando categorías:', catInsertError);
         throw new Error(`Error creando categorías faltantes: ${catInsertError.message}`);
       }
 
@@ -156,6 +225,7 @@ export async function confirmRegistrationsAction(
         .select('id, name');
 
       if (clubInsertError) {
+        console.error('[confirmRegistrationsAction] Error insertando clubes:', clubInsertError);
         throw new Error(`Error creando clubes: ${clubInsertError.message}`);
       }
 
@@ -193,12 +263,20 @@ export async function confirmRegistrationsAction(
       };
     });
 
+    // Deduplicar atletas en el lote por RUT para evitar conflicto batch en PostgreSQL
+    const uniqueAthletesMap = new Map<string, (typeof sanitizedAthletes)[0]>();
+    sanitizedAthletes.forEach((ath) => {
+      uniqueAthletesMap.set(ath.rut_dni, ath);
+    });
+    const dedupedAthletes = Array.from(uniqueAthletesMap.values());
+
     const { data: upsertedAthletes, error: athleteError } = await supabase
       .from('athletes')
-      .upsert(sanitizedAthletes, { onConflict: 'organization_id,rut_dni' })
+      .upsert(dedupedAthletes, { onConflict: 'organization_id,rut_dni' })
       .select('id, rut_dni');
 
     if (athleteError) {
+      console.error('[confirmRegistrationsAction] Error insertando atletas:', athleteError);
       throw new Error(`Error insertando atletas: ${athleteError.message}`);
     }
 
@@ -234,26 +312,125 @@ export async function confirmRegistrationsAction(
       };
     });
 
+    // Deduplicar inscripciones por atleta en el lote para respetar uq_registration
+    const uniqueRegsMap = new Map<string, (typeof registrationsToInsert)[0]>();
+    registrationsToInsert.forEach((reg) => {
+      uniqueRegsMap.set(reg.athlete_id, reg);
+    });
+    const dedupedRegistrations = Array.from(uniqueRegsMap.values());
+
     const { error: regError } = await supabase
       .from('tournament_registrations')
-      .upsert(registrationsToInsert, { onConflict: 'tournament_id,athlete_id' });
+      .upsert(dedupedRegistrations, { onConflict: 'tournament_id,athlete_id' });
 
     if (regError) {
+      console.error('[confirmRegistrationsAction] Error insertando inscripciones:', regError);
       throw new Error(`Error creando inscripciones: ${regError.message}`);
     }
 
     return {
       success: true,
-      count: registrationsToInsert.length,
-      message: `¡Inscripción exitosa! Se confirmaron y almacenaron ${registrationsToInsert.length} atletas en la base de datos.`,
+      count: dedupedRegistrations.length,
+      message: `¡Inscripción exitosa! Se confirmaron y almacenaron ${dedupedRegistrations.length} atletas en la base de datos.`,
     };
   } catch (err: any) {
     console.error('[confirmRegistrationsAction] Error:', err);
     return {
       success: false,
       count: 0,
-      message: 'Ocurrió un error al procesar las inscripciones en la base de datos.',
+      message: err?.message || 'Ocurrió un error al procesar las inscripciones en la base de datos.',
       error: err?.message || 'Error desconocido del servidor.',
     };
   }
 }
+
+export interface RegisteredAthleteSummary {
+  id: string;
+  athlete_id: string;
+  rut_dni: string;
+  name: string;
+  club_name: string;
+  birth_year: number;
+  gender: 'M' | 'F';
+  category_name: string;
+  category_id: string;
+  weigh_in_status: string;
+  actual_weight?: number | null;
+  registered_weight?: number | null;
+}
+
+/**
+ * Obtiene la lista de deportistas inscritos estrictamente en un torneo específico.
+ */
+export async function getTournamentRegistrationsAction(
+  tournamentId: string
+): Promise<{ success: boolean; athletes: RegisteredAthleteSummary[]; error?: string }> {
+  if (!tournamentId) {
+    return { success: false, athletes: [], error: 'ID de campeonato inválido' };
+  }
+
+  try {
+    const supabase = createAdminClient();
+
+    const { data, error } = await supabase
+      .from('tournament_registrations')
+      .select(`
+        id,
+        registered_weight,
+        actual_weight,
+        weigh_in_status,
+        category:categories (
+          id,
+          name
+        ),
+        athlete:athletes (
+          id,
+          rut_dni,
+          first_name,
+          last_name,
+          gender,
+          birth_date,
+          club:clubs (
+            name
+          )
+        )
+      `)
+      .eq('tournament_id', tournamentId);
+
+    if (error) {
+      console.warn('[getTournamentRegistrationsAction] Error:', error.message);
+      return { success: false, athletes: [], error: error.message };
+    }
+
+    if (!data || data.length === 0) {
+      return { success: true, athletes: [] };
+    }
+
+    const athletes: RegisteredAthleteSummary[] = data.map((item: any) => {
+      const birthYear = item.athlete?.birth_date
+        ? new Date(item.athlete.birth_date).getFullYear()
+        : 2009;
+
+      return {
+        id: item.id,
+        athlete_id: item.athlete?.id || '',
+        rut_dni: item.athlete?.rut_dni || '',
+        name: `${item.athlete?.first_name || ''} ${item.athlete?.last_name || ''}`.trim(),
+        club_name: item.athlete?.club?.name || 'Independiente',
+        category_name: item.category?.name || 'Categoría Oficial',
+        category_id: item.category?.id || '',
+        gender: (item.athlete?.gender as 'M' | 'F') || 'M',
+        birth_year: birthYear,
+        weigh_in_status: item.weigh_in_status || 'PENDING',
+        actual_weight: item.actual_weight,
+        registered_weight: item.registered_weight,
+      };
+    });
+
+    return { success: true, athletes };
+  } catch (err: any) {
+    console.error('[getTournamentRegistrationsAction] Excepción:', err);
+    return { success: false, athletes: [], error: err.message };
+  }
+}
+
