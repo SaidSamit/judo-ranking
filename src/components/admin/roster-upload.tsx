@@ -1,47 +1,61 @@
 // ==============================================================================
-// COMPONENTE: MÓDULO ETL DE IMPORTACIÓN DE NÓMINAS (ROSTER UPLOAD)
+// COMPONENTE: MÓDULO DE INSCRIPCIÓN Y BORRADOR DE NÓMINA (DRAFT STATE PATTERN)
 // ==============================================================================
 //
-// ¿POR QUÉ PARSEAR EN EL CLIENTE Y ENVIAR JSON AL BACKEND?
-// 1. Arquitectura Serverless y Costos: Subir archivos multipart crudos al backend
-//    consume memoria RAM de las funciones serverless de Next.js/Vercel (límite de 4.5MB
-//    a 10MB en payloads multipart) y satura el hilo de Node.js parseando buffers.
-// 2. Feedback Inmediato al Operador: La validación ocurre a 0ms en la CPU del navegador.
-//    Si una fila tiene un RUT duplicado o formato inválido, el operador lo ve antes
-//    de emitir una sola petición HTTP.
-// 3. Sanitización Cero Confianza: El cliente limpia espacios, normaliza campos
-//    (ej. 'Masculino' -> 'M') y emite un JSON estructurado y tipado.
+// REGLAS DE NEGOCIO Y ACREDITACIÓN APLICADAS:
+// 1. RUT / DNI Obligatorio y Principal: Primer campo del formulario con autofocus.
+// 2. Menú Desplegable de Categorías: Selección restringida a estándares oficiales.
+// 3. Año de Nacimiento Obligatorio: Determina matemáticamente la división etaria
+//    (Sub-11, Sub-13, Sub-15, Cadetes Sub-18, Junior Sub-21, Senior, Master).
+// 4. Filtrado Reactivo por Edad y Sexo: El dropdown de categorías solo muestra los
+//    pesos oficiales según el año de nacimiento y género del atleta.
+// 5. Exclusión de Peso en Acreditación: El pesaje se captura exclusivamente en la
+//    Estación de Pesaje (WEIGH_IN), manteniendo la acreditación ágil y limpia.
+// 6. Patrón Estado Borrador (Draft State): Toda la nómina se valida localmente a 0ms
+//    y se compromete en Supabase mediante un Server Action masivo y atómico.
 //
 // ==============================================================================
 
 'use client';
 
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import Papa from 'papaparse';
 import {
-  Competitor,
-  generateCategoryBracket,
-  BracketResult,
-} from '@/lib/rules/bracket-engine';
+  Plus,
+  Upload,
+  Trash2,
+  Edit2,
+  Check,
+  X,
+  FileSpreadsheet,
+  Users,
+  Save,
+  AlertCircle,
+  Calendar,
+  Layers,
+  ChevronDown,
+} from 'lucide-react';
+import { confirmRegistrationsAction, DraftAthletePayload } from '@/app/actions/registrations';
+import {
+  getDivisionByBirthYear,
+  getAvailableCategoriesForAthlete,
+  getAllPossibleCategories,
+} from '@/lib/rules/judo-categories';
 
-export interface ParsedAthlete {
-  id: string;
+export interface DraftAthlete {
+  id: string; // ID local temporal
+  rut_dni: string; // Obligatorio y clave única
   name: string;
-  last_name?: string;
-  rut_dni: string;
   club_name: string;
-  category: string;
+  birth_year: number; // Obligatorio
   gender: 'M' | 'F';
-  birth_date?: string;
-  weight?: number;
+  category: string; // Seleccionada del dropdown
   seed?: number;
-  isValid: boolean;
-  errors: string[];
 }
 
-interface CategoryGroup {
+interface CategorySummary {
   name: string;
-  athletes: ParsedAthlete[];
+  count: number;
   bracketType: 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION' | 'INSUFFICIENT';
   bracketTypeLabel: string;
 }
@@ -49,151 +63,371 @@ interface CategoryGroup {
 interface RosterUploadProps {
   organizationId?: string;
   tournamentId?: string;
-  onImportComplete?: (athletes: ParsedAthlete[], brackets: BracketResult[]) => void;
+  onRegistrationsConfirmed?: (count: number) => void;
 }
 
 export function RosterUpload({
   organizationId = 'a0000000-0000-0000-0000-000000000001',
   tournamentId = 'e0000000-0000-0000-0000-000000000001',
-  onImportComplete,
+  onRegistrationsConfirmed,
 }: RosterUploadProps) {
-  const [file, setFile] = useState<File | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [parsedAthletes, setParsedAthletes] = useState<ParsedAthlete[]>([]);
-  const [generatedBrackets, setGeneratedBrackets] = useState<BracketResult[]>([]);
-  const [filterCategory, setFilterCategory] = useState<string>('ALL');
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const currentYear = new Date().getFullYear();
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // 1. ESTADO BORRADOR PRINCIPAL (FUENTE LOCAL DE VERDAD)
+  const [draftAthletes, setDraftAthletes] = useState<DraftAthlete[]>([
+    {
+      id: 'demo-1',
+      rut_dni: '19.876.543-2',
+      name: 'Carlos Muñoz',
+      club_name: 'Club Judo Iquique',
+      birth_year: 2009,
+      gender: 'M',
+      category: 'Cadetes (Sub-18) Masculino -60kg',
+      seed: 1,
+    },
+    {
+      id: 'demo-2',
+      rut_dni: '20.123.456-7',
+      name: 'Matías Silva',
+      club_name: 'Judo Club Alto Hospicio',
+      birth_year: 2009,
+      gender: 'M',
+      category: 'Cadetes (Sub-18) Masculino -60kg',
+      seed: 2,
+    },
+  ]);
 
-  // Normalizador de nombres de columnas comunes
-  const normalizeKey = (key: string): string => {
-    const clean = key
-      .toLowerCase()
-      .trim()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '');
+  // 2. FORMULARIO MANUAL ÁGIL (RUT ES EL CAMPO PRINCIPAL Y OBLIGATORIO)
+  const [formRut, setFormRut] = useState('');
+  const [formName, setFormName] = useState('');
+  const [formClub, setFormClub] = useState('');
+  const [formBirthYear, setFormBirthYear] = useState<number | ''>(2009);
+  const [formGender, setFormGender] = useState<'M' | 'F'>('M');
+  const [formCategory, setFormCategory] = useState('');
 
-    if (clean.includes('rut') || clean.includes('dni') || clean.includes('doc')) return 'rut_dni';
-    if (clean.includes('nombre') && !clean.includes('apellido')) return 'name';
-    if (clean.includes('apellido')) return 'last_name';
-    if (clean.includes('club') || clean.includes('equipo') || clean.includes('academia')) return 'club_name';
-    if (clean.includes('cat') || clean.includes('division')) return 'category';
-    if (clean.includes('gen') || clean.includes('sex')) return 'gender';
-    if (clean.includes('peso') || clean.includes('weight')) return 'weight';
-    if (clean.includes('seed') || clean.includes('siembra') || clean.includes('ranking')) return 'seed';
-    if (clean.includes('nacimiento') || clean.includes('birth')) return 'birth_date';
-    return clean;
+  // 3. ESTADOS DE EDICIÓN EN LÍNEA
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<DraftAthlete | null>(null);
+
+  // 4. ESTADOS DE CSV & ENVÍO
+  const [showCsvDropzone, setShowCsvDropzone] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState<{
+    type: 'success' | 'error' | 'info';
+    text: string;
+  } | null>(null);
+
+  const rutInputRef = useRef<HTMLInputElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
+
+  // ============================================================================
+  // CÁLCULO DINÁMICO DE CATEGORÍAS SEGÚN AÑO DE NACIMIENTO Y GÉNERO
+  // ============================================================================
+  const availableDivInfo = useMemo(() => {
+    if (!formBirthYear || typeof formBirthYear !== 'number' || isNaN(formBirthYear)) {
+      return { divisionName: '', categories: [] };
+    }
+    return getAvailableCategoriesForAthlete(formBirthYear, formGender, currentYear);
+  }, [formBirthYear, formGender, currentYear]);
+
+  // Sincronizar automáticamente la categoría seleccionada cuando cambian las opciones disponibles
+  useEffect(() => {
+    if (availableDivInfo.categories.length > 0) {
+      if (!availableDivInfo.categories.includes(formCategory)) {
+        setFormCategory(availableDivInfo.categories[0]);
+      }
+    } else {
+      setFormCategory('');
+    }
+  }, [availableDivInfo.categories, formCategory]);
+
+  // ============================================================================
+  // ACCIÓN 1: AGREGAR ATLETA MANUALMENTE AL BORRADOR
+  // ============================================================================
+  const handleAddManualAthlete = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+
+    // 1. Validación de RUT obligatorio
+    const cleanRut = formRut.trim();
+    if (!cleanRut) {
+      setFeedbackMessage({
+        type: 'error',
+        text: 'El RUT es obligatorio.',
+      });
+      rutInputRef.current?.focus();
+      return;
+    }
+
+    // 2. Validación de Nombre obligatorio
+    const cleanName = formName.trim();
+    if (!cleanName) {
+      setFeedbackMessage({
+        type: 'error',
+        text: 'Por favor, ingresa el Nombre Completo del atleta.',
+      });
+      nameInputRef.current?.focus();
+      return;
+    }
+
+    // 3. Validación de Año de Nacimiento obligatorio
+    const birthYearNum =
+      typeof formBirthYear === 'number'
+        ? formBirthYear
+        : parseInt(String(formBirthYear), 10);
+
+    if (
+      !birthYearNum ||
+      isNaN(birthYearNum) ||
+      birthYearNum < 1940 ||
+      birthYearNum > currentYear
+    ) {
+      setFeedbackMessage({
+        type: 'error',
+        text: `El Año de Nacimiento es obligatorio y debe estar entre 1940 y ${currentYear}.`,
+      });
+      return;
+    }
+
+    // 4. Validación de Categoría desplegable
+    const cleanCategory = formCategory.trim();
+    if (!cleanCategory) {
+      setFeedbackMessage({
+        type: 'error',
+        text: 'Debes seleccionar una Categoría del menú desplegable.',
+      });
+      return;
+    }
+
+    // Verificar si el RUT ya existe en el borrador
+    const alreadyExists = draftAthletes.some(
+      (a) =>
+        a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase() ===
+        cleanRut.replace(/[.\-\s]/g, '').toUpperCase()
+    );
+
+    if (alreadyExists) {
+      setFeedbackMessage({
+        type: 'error',
+        text: `El atleta con RUT "${cleanRut}" ya se encuentra en el borrador temporal.`,
+      });
+      rutInputRef.current?.focus();
+      return;
+    }
+
+    const cleanClub = formClub.trim() || 'Independiente';
+
+    const newAthlete: DraftAthlete = {
+      id: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      rut_dni: cleanRut,
+      name: cleanName,
+      club_name: cleanClub,
+      birth_year: birthYearNum,
+      gender: formGender,
+      category: cleanCategory,
+    };
+
+    setDraftAthletes((prev) => [newAthlete, ...prev]);
+
+    // Limpiar campos clave y retornar el foco a RUT para carga en serie ultra rápida
+    setFormRut('');
+    setFormName('');
+    setFeedbackMessage({
+      type: 'info',
+      text: `Atleta "${cleanName}" (${cleanCategory}) agregado al borrador.`,
+    });
+
+    rutInputRef.current?.focus();
   };
 
-  // Procesamiento del archivo con PapaParse en el navegador
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
+  // ============================================================================
+  // ACCIÓN 2: IMPORTAR CSV MASIVAMENTE Y ANEXAR AL BORRADOR
+  // ============================================================================
+  const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    setFile(selectedFile);
-    setIsProcessing(true);
-    setStatusMessage(null);
-
-    Papa.parse<Record<string, any>>(selectedFile, {
+    Papa.parse<Record<string, any>>(file, {
       header: true,
       skipEmptyLines: true,
-      transformHeader: (header) => normalizeKey(header),
       complete: (results) => {
-        const seenRuts = new Set<string>();
-        const athletes: ParsedAthlete[] = [];
+        const imported: DraftAthlete[] = [];
 
-        results.data.forEach((row, index) => {
-          const errors: string[] = [];
+        results.data.forEach((row, idx) => {
+          const rawRut = (
+            row.rut ||
+            row.dni ||
+            row.rut_dni ||
+            row.identificacion ||
+            `TEMP-${Date.now().toString().slice(-4)}-${idx + 1}`
+          ).trim();
 
-          // 1. Nombre
-          const rawName = (row.name || '').trim();
-          const rawLastName = (row.last_name || '').trim();
+          const rawName = (row.nombre || row.name || row.atleta || '').trim();
+          const rawLastName = (row.apellido || row.last_name || '').trim();
           const fullName = rawLastName ? `${rawName} ${rawLastName}` : rawName;
-          if (!fullName) {
-            errors.push('Falta el nombre del atleta');
+          if (!fullName) return; // Omitir filas sin nombre
+
+          const club = (row.club || row.equipo || row.club_name || 'Independiente').trim();
+
+          const rawGender = (row.genero || row.sexo || row.gender || 'M').toString().toUpperCase();
+          const gender: 'M' | 'F' = rawGender.startsWith('F') ? 'F' : 'M';
+
+          // Año de nacimiento
+          let birthYear = parseInt(
+            row.ano || row.anio || row.año || row.birth_year || row.ano_nacimiento || '',
+            10
+          );
+          if (isNaN(birthYear) || birthYear < 1940 || birthYear > currentYear) {
+            birthYear = 2008; // Valor por defecto en CSV si viene ausente
           }
 
-          // 2. RUT / DNI
-          const rut = (row.rut_dni || '').toString().trim().toUpperCase().replace(/[.\-\s]/g, '');
-          if (!rut) {
-            errors.push('Falta el RUT o DNI');
-          } else if (seenRuts.has(rut)) {
-            errors.push(`RUT duplicado en la nómina (${rut})`);
-          } else {
-            seenRuts.add(rut);
-          }
-
-          // 3. Género
-          const rawGender = (row.gender || '').toString().trim().toUpperCase();
-          let gender: 'M' | 'F' = 'M';
-          if (rawGender.startsWith('F') || rawGender.includes('FEM') || rawGender.includes('MUJ')) {
-            gender = 'F';
-          } else if (rawGender.startsWith('M') || rawGender.includes('VAR') || rawGender.includes('HOM')) {
-            gender = 'M';
-          } else {
-            errors.push('Género no reconocido (debe ser M o F)');
-          }
-
-          // 4. Categoría
-          const category = (row.category || 'Categoría Abierta').toString().trim();
+          // Categoría (si no viene o no coincide, calcular por edad y sexo)
+          let category = (row.categoria || row.category || row.division || '').trim();
           if (!category) {
-            errors.push('Categoría no asignada');
+            const computed = getAvailableCategoriesForAthlete(birthYear, gender, currentYear);
+            category = computed.categories[0] || 'Senior Masculino -60kg';
           }
 
-          // 5. Club
-          const club = (row.club_name || 'Independiente').toString().trim();
-
-          // 6. Peso y Seed opcionales
-          const weight = row.weight ? parseFloat(row.weight) : undefined;
-          const seed = row.seed ? parseInt(row.seed, 10) : undefined;
-
-          // Generar ID único
-          const id =
-            typeof crypto !== 'undefined' && crypto.randomUUID
-              ? crypto.randomUUID()
-              : `athlete-${index + 1}`;
-
-          athletes.push({
-            id,
+          imported.push({
+            id: `csv-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+            rut_dni: rawRut,
             name: fullName,
-            last_name: rawLastName,
-            rut_dni: rut,
             club_name: club,
-            category,
+            birth_year: birthYear,
             gender,
-            birth_date: row.birth_date ? String(row.birth_date).trim() : undefined,
-            weight: isNaN(weight as number) ? undefined : weight,
-            seed: isNaN(seed as number) ? undefined : seed,
-            isValid: errors.length === 0,
-            errors,
+            category,
           });
         });
 
-        setParsedAthletes(athletes);
-        setIsProcessing(false);
+        if (imported.length > 0) {
+          setDraftAthletes((prev) => [...imported, ...prev]);
+          setFeedbackMessage({
+            type: 'success',
+            text: `Se importaron ${imported.length} atletas del CSV y se agregaron a la tabla borrador.`,
+          });
+          setShowCsvDropzone(false);
+        } else {
+          setFeedbackMessage({
+            type: 'error',
+            text: 'No se encontraron filas válidas en el archivo CSV.',
+          });
+        }
+
+        if (csvInputRef.current) csvInputRef.current.value = '';
       },
       error: (err) => {
-        setIsProcessing(false);
-        setStatusMessage(`Error leyendo el archivo: ${err.message}`);
+        setFeedbackMessage({
+          type: 'error',
+          text: `Error procesando el archivo CSV: ${err.message}`,
+        });
       },
     });
   };
 
-  // Agrupación por categoría e inferencia de modalidad de sorteo
-  const categoryGroups = useMemo<CategoryGroup[]>(() => {
-    const groups: { [cat: string]: ParsedAthlete[] } = {};
+  // ============================================================================
+  // ACCIÓN 3: GESTIÓN DE FILAS EN LA TABLA BORRADOR (EDITAR / ELIMINAR)
+  // ============================================================================
+  const handleDeleteRow = (id: string) => {
+    setDraftAthletes((prev) => prev.filter((a) => a.id !== id));
+    if (editingId === id) {
+      setEditingId(null);
+      setEditForm(null);
+    }
+  };
 
-    parsedAthletes.forEach((a) => {
-      if (!groups[a.category]) {
-        groups[a.category] = [];
+  const handleStartEdit = (athlete: DraftAthlete) => {
+    setEditingId(athlete.id);
+    setEditForm({ ...athlete });
+  };
+
+  const handleSaveEdit = () => {
+    if (!editForm) return;
+
+    if (!editForm.rut_dni.trim()) {
+      alert('El RUT es obligatorio.');
+      return;
+    }
+    if (!editForm.name.trim()) {
+      alert('El nombre es obligatorio.');
+      return;
+    }
+
+    setDraftAthletes((prev) =>
+      prev.map((a) => (a.id === editForm.id ? { ...editForm } : a))
+    );
+    setEditingId(null);
+    setEditForm(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditForm(null);
+  };
+
+  const handleClearAll = () => {
+    if (confirm('¿Estás seguro de que deseas vaciar toda la tabla borrador?')) {
+      setDraftAthletes([]);
+      setFeedbackMessage({ type: 'info', text: 'Borrador vaciado completamente.' });
+    }
+  };
+
+  // ============================================================================
+  // ACCIÓN 4: ENVÍO MASIVO A BASE DE DATOS (SERVER ACTION)
+  // ============================================================================
+  const handleConfirmRegistrations = async () => {
+    if (draftAthletes.length === 0) return;
+
+    setIsSubmitting(true);
+    setFeedbackMessage({ type: 'info', text: 'Guardando nómina en Supabase...' });
+
+    try {
+      const payload: DraftAthletePayload[] = draftAthletes.map((a) => ({
+        id: a.id,
+        rut_dni: a.rut_dni,
+        name: a.name,
+        club_name: a.club_name,
+        category: a.category,
+        gender: a.gender,
+        birth_year: a.birth_year,
+        seed: a.seed,
+      }));
+
+      const res = await confirmRegistrationsAction(payload, organizationId, tournamentId);
+
+      if (res.success) {
+        setFeedbackMessage({
+          type: 'success',
+          text: res.message || `¡Éxito! Se confirmaron ${res.count} inscripciones en la base de datos.`,
+        });
+        if (onRegistrationsConfirmed) {
+          onRegistrationsConfirmed(res.count);
+        }
+      } else {
+        setFeedbackMessage({
+          type: 'error',
+          text: res.message || res.error || 'Ocurrió un error al confirmar inscripciones.',
+        });
       }
-      groups[a.category].push(a);
+    } catch (err: any) {
+      setFeedbackMessage({
+        type: 'error',
+        text: `Error de conexión: ${err.message || 'Fallo inesperado al ejecutar Server Action'}`,
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Diagnóstico de llaves por categoría
+  const categorySummaries = useMemo<CategorySummary[]>(() => {
+    const map = new Map<string, number>();
+    draftAthletes.forEach((a) => {
+      const cat = a.category.trim();
+      map.set(cat, (map.get(cat) || 0) + 1);
     });
 
-    return Object.entries(groups).map(([name, athletes]) => {
-      const count = athletes.length;
-      let bracketType: CategoryGroup['bracketType'] = 'SINGLE_ELIMINATION';
+    return Array.from(map.entries()).map(([name, count]) => {
+      let bracketType: CategorySummary['bracketType'] = 'SINGLE_ELIMINATION';
       let bracketTypeLabel = 'Eliminación Simple';
 
       if (count < 2) {
@@ -210,333 +444,546 @@ export function RosterUpload({
         bracketTypeLabel = `Eliminación Simple (N=${count})`;
       }
 
-      return {
-        name,
-        athletes,
-        bracketType,
-        bracketTypeLabel,
-      };
+      return { name, count, bracketType, bracketTypeLabel };
     });
-  }, [parsedAthletes]);
-
-  // Ejecutar el motor de sorteo para todas las categorías válidas
-  const handleGenerateAllBrackets = () => {
-    const brackets: BracketResult[] = [];
-    let startMatchNumber = 1;
-
-    categoryGroups.forEach((group, groupIdx) => {
-      if (group.athletes.length < 2) return;
-
-      const competitors: Competitor[] = group.athletes.map((a) => ({
-        id: a.id,
-        name: a.name,
-        club_name: a.club_name,
-        seed: a.seed,
-        weight: a.weight,
-      }));
-
-      // Asignar tatami (distribuir entre tatami 1 y 2 según índice de categoría)
-      const tatamiNumber = (groupIdx % 2) + 1;
-
-      const result = generateCategoryBracket(competitors, {
-        organization_id: organizationId,
-        tournament_id: tournamentId,
-        category_id: `cat-${groupIdx + 1}`,
-        category_name: group.name,
-        tatami_number: tatamiNumber,
-        start_match_number: startMatchNumber,
-      });
-
-      startMatchNumber += result.total_matches;
-      brackets.push(result);
-    });
-
-    setGeneratedBrackets(brackets);
-    setStatusMessage(
-      `¡Sorteo completado con éxito! Se generaron ${brackets.reduce(
-        (acc, b) => acc + b.total_matches,
-        0
-      )} combates en ${brackets.length} categorías.`
-    );
-
-    if (onImportComplete) {
-      onImportComplete(parsedAthletes, brackets);
-    }
-  };
-
-  // Descargar JSON sanitizado
-  const handleDownloadJSON = () => {
-    const payload = {
-      tournament_id: tournamentId,
-      organization_id: organizationId,
-      total_athletes: parsedAthletes.length,
-      categories_count: categoryGroups.length,
-      athletes: parsedAthletes,
-      brackets: generatedBrackets,
-      exported_at: new Date().toISOString(),
-    };
-
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: 'application/json',
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `nomina_sorteo_${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Métricas rápidas
-  const validCount = parsedAthletes.filter((a) => a.isValid).length;
-  const errorCount = parsedAthletes.length - validCount;
-
-  // Filtrado de la tabla de atletas
-  const filteredAthletes = useMemo(() => {
-    if (filterCategory === 'ALL') return parsedAthletes;
-    return parsedAthletes.filter((a) => a.category === filterCategory);
-  }, [parsedAthletes, filterCategory]);
+  }, [draftAthletes]);
 
   return (
     <div className="w-full space-y-6 text-slate-100 font-sans">
       {/* ==================================================================== */}
-      {/* ZONA DE CARGA DEL ARCHIVO (DRAG & DROP) */}
+      {/* 1. UI PRINCIPAL: FORMULARIO MANUAL ÁGIL (RUT ES EL CAMPO PRINCIPAL) */}
       {/* ==================================================================== */}
-      <div
-        onClick={() => fileInputRef.current?.click()}
-        className="border-2 border-dashed border-slate-700 hover:border-amber-500 bg-slate-900/60 hover:bg-slate-900/90 transition-all rounded-2xl p-8 text-center cursor-pointer flex flex-col items-center justify-center space-y-3"
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv,.tsv,.txt"
-          onChange={handleFileChange}
-          className="hidden"
-        />
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800 pb-3">
+          <div>
+            <h2 className="text-xl font-bold text-white flex items-center space-x-2">
+              <span>Acreditación Rápida de Atletas</span>
+              <span className="text-xs bg-amber-500/20 text-amber-400 border border-amber-500/40 px-2 py-0.5 rounded-full font-mono">
+                Modo Borrador
+              </span>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              El <strong className="text-slate-200">RUT</strong> y el{' '}
+              <strong className="text-slate-200">Año de Nacimiento</strong> son obligatorios. Las
+              categorías se filtran automáticamente según la edad y el sexo. El pesaje se realiza
+              en la estación de pesaje.
+            </p>
+          </div>
 
-        <div className="w-14 h-14 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 text-2xl font-bold">
-          📄
+          {/* BOTÓN SECUNDARIO: ABRIR IMPORTACIÓN CSV */}
+          <button
+            type="button"
+            onClick={() => setShowCsvDropzone((prev) => !prev)}
+            className="flex items-center space-x-2 text-xs px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition font-bold"
+          >
+            <Upload className="w-3.5 h-3.5 text-amber-400" />
+            <span>{showCsvDropzone ? 'Ocultar Carga CSV' : 'Importar CSV de Respaldo'}</span>
+          </button>
         </div>
 
-        <div>
-          <h3 className="text-lg font-bold text-slate-200">
-            {file ? file.name : 'Haz clic o arrastra aquí tu nómina de atletas (.CSV)'}
-          </h3>
-          <p className="text-xs text-slate-400 mt-1">
-            Soporta columnas: Nombre, Apellido, RUT/DNI, Club, Categoría, Género (M/F), Peso, Seed.
-          </p>
-        </div>
+        {/* ÁREA DESPLEGABLE DE CSV (UI SECUNDARIA) */}
+        {showCsvDropzone && (
+          <div className="p-4 bg-slate-950/80 border-2 border-dashed border-slate-700 rounded-xl flex items-center justify-between gap-4">
+            <div className="flex items-center space-x-3">
+              <FileSpreadsheet className="w-8 h-8 text-emerald-400 flex-shrink-0" />
+              <div>
+                <span className="text-sm font-bold text-white block">
+                  Carga Masiva desde CSV
+                </span>
+                <span className="text-xs text-slate-400 block">
+                  Columnas admitidas: rut, nombre, apellido, club, ano_nacimiento, genero, categoria.
+                </span>
+              </div>
+            </div>
 
-        {isProcessing && (
-          <div className="text-xs text-amber-400 animate-pulse font-mono font-bold">
-            ⚡ Procesando y validando en el navegador...
+            <label className="cursor-pointer px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center space-x-1.5 flex-shrink-0">
+              <Upload className="w-3.5 h-3.5" />
+              <span>Seleccionar Archivo</span>
+              <input
+                ref={csvInputRef}
+                type="file"
+                accept=".csv,.tsv,.txt"
+                onChange={handleCsvImport}
+                className="hidden"
+              />
+            </label>
           </div>
         )}
-      </div>
 
-      {/* ==================================================================== */}
-      {/* MÉTRICAS DEL ETL */}
-      {/* ==================================================================== */}
-      {parsedAthletes.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-400 uppercase font-bold tracking-wider">
-              Total Atletas
-            </span>
-            <div className="text-3xl font-black text-white mt-1">
-              {parsedAthletes.length}
+        {/* FORMULARIO MANUAL: RUT PRIMERO, CATEGORÍA DROPDOWN, SIN PESO */}
+        <form onSubmit={handleAddManualAthlete} className="space-y-4 pt-1">
+          {/* FILA 1: RUT, NOMBRE, CLUB */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+            {/* 1. RUT: CAMPO OBLIGATORIO */}
+            <div className="md:col-span-4">
+              <label className="block text-xs font-bold text-slate-300 mb-1">
+                RUT <span className="text-red-400">*</span>
+              </label>
+              <input
+                ref={rutInputRef}
+                type="text"
+                placeholder="Ej: 19.876.543-2"
+                value={formRut}
+                onChange={(e) => setFormRut(e.target.value)}
+                required
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 font-mono"
+                autoFocus
+              />
+            </div>
+
+            {/* 2. Nombre Completo */}
+            <div className="md:col-span-4">
+              <label className="block text-xs font-bold text-slate-300 mb-1">
+                Nombre Completo <span className="text-red-400">*</span>
+              </label>
+              <input
+                ref={nameInputRef}
+                type="text"
+                placeholder="Ej: Matías González"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                required
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
+              />
+            </div>
+
+            {/* 3. Club / Delegación */}
+            <div className="md:col-span-4">
+              <label className="block text-xs font-bold text-slate-300 mb-1">
+                Club / Delegación
+              </label>
+              <input
+                type="text"
+                placeholder="Ej: Club de Judo Hiroshima"
+                value={formClub}
+                onChange={(e) => setFormClub(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+              />
             </div>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-400 uppercase font-bold tracking-wider">
-              Registros Válidos
-            </span>
-            <div className="text-3xl font-black text-emerald-400 mt-1">
-              {validCount}
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-400 uppercase font-bold tracking-wider">
-              Observaciones / Errores
-            </span>
-            <div className={`text-3xl font-black mt-1 ${errorCount > 0 ? 'text-red-400' : 'text-slate-500'}`}>
-              {errorCount}
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <span className="text-xs text-slate-400 uppercase font-bold tracking-wider">
-              Categorías
-            </span>
-            <div className="text-3xl font-black text-amber-400 mt-1">
-              {categoryGroups.length}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==================================================================== */}
-      {/* RESUMEN POR CATEGORÍAS Y MOTOR DE SORTEO DINÁMICO */}
-      {/* ==================================================================== */}
-      {categoryGroups.length > 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-              <h4 className="text-lg font-bold text-white">
-                Distribución de Categorías y Modalidad Asignada
-              </h4>
-              <p className="text-xs text-slate-400">
-                El sistema detecta automáticamente la regla IJF correspondiente a cada categoría.
-              </p>
+          {/* FILA 2: AÑO NACIMIENTO (OBLIGATORIO), GÉNERO, CATEGORÍA DROPDOWN, BOTÓN AGREGAR */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            {/* 4. Año de Nacimiento (Obligatorio) */}
+            <div className="md:col-span-2">
+              <label className="block text-xs font-bold text-slate-300 mb-1 flex items-center space-x-1">
+                <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                <span>Año Nac.</span>
+                <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="number"
+                min={1940}
+                max={currentYear}
+                placeholder="Ej: 2010"
+                value={formBirthYear}
+                onChange={(e) =>
+                  setFormBirthYear(e.target.value ? parseInt(e.target.value, 10) : '')
+                }
+                required
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 font-mono"
+              />
             </div>
 
-            <div className="flex space-x-2">
-              <button
-                onClick={handleGenerateAllBrackets}
-                disabled={errorCount > 0}
-                className={`px-4 py-2 rounded-lg font-bold text-sm transition ${
-                  errorCount > 0
-                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg'
-                }`}
-              >
-                ⚡ Sortear Todas las Llaves
-              </button>
-
-              <button
-                onClick={handleDownloadJSON}
-                className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-sm border border-slate-700 transition"
-              >
-                📥 Descargar JSON
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
-            {categoryGroups.map((group) => (
-              <div
-                key={group.name}
-                className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex flex-col justify-between"
-              >
-                <div>
-                  <span className="text-sm font-bold text-slate-200 block truncate">
-                    {group.name}
-                  </span>
-                  <span className="text-xs text-slate-400 mt-0.5 block">
-                    {group.athletes.length} competidores inscritos
-                  </span>
-                </div>
-
-                <div className="mt-3 flex items-center justify-between">
-                  <span
-                    className={`text-xs px-2.5 py-0.5 rounded-full font-bold uppercase ${
-                      group.bracketType === 'BEST_OF_3'
-                        ? 'bg-purple-950 text-purple-400 border border-purple-700'
-                        : group.bracketType === 'ROUND_ROBIN'
-                        ? 'bg-amber-950 text-amber-400 border border-amber-700'
-                        : group.bracketType === 'SINGLE_ELIMINATION'
-                        ? 'bg-blue-950 text-blue-400 border border-blue-700'
-                        : 'bg-red-950 text-red-400 border border-red-700'
-                    }`}
-                  >
-                    {group.bracketTypeLabel}
-                  </span>
-                </div>
+            {/* 5. Género (M / F) */}
+            <div className="md:col-span-2">
+              <label className="block text-xs font-bold text-slate-300 mb-1">
+                Género
+              </label>
+              <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 border border-slate-800 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setFormGender('M')}
+                  className={`py-1.5 rounded text-xs font-bold transition text-center ${
+                    formGender === 'M'
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Masc (M)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormGender('F')}
+                  className={`py-1.5 rounded text-xs font-bold transition text-center ${
+                    formGender === 'F'
+                      ? 'bg-pink-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Fem (F)
+                </button>
               </div>
-            ))}
+            </div>
+
+            {/* 6. Categoría: MENÚ DESPLEGABLE FILTRADO DINÁMICAMENTE POR EDAD Y GÉNERO */}
+            <div className="md:col-span-6">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-bold text-slate-300 flex items-center space-x-1">
+                  <Layers className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Categorías Oficiales</span>
+                  <span className="text-red-400">*</span>
+                </label>
+                {availableDivInfo.divisionName && (
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    {availableDivInfo.divisionName} (
+                    {typeof formBirthYear === 'number'
+                      ? `${currentYear - formBirthYear} años`
+                      : ''}
+                    )
+                  </span>
+                )}
+              </div>
+
+              <div className="relative">
+                <select
+                  value={formCategory}
+                  onChange={(e) => setFormCategory(e.target.value)}
+                  required
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400 appearance-none pr-8 cursor-pointer"
+                >
+                  {availableDivInfo.categories.length === 0 ? (
+                    <option value="">Ingresa el año de nacimiento...</option>
+                  ) : (
+                    availableDivInfo.categories.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+            </div>
+
+            {/* 7. Botón de Agregar al Borrador */}
+            <div className="md:col-span-2">
+              <button
+                type="submit"
+                className="w-full py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-lg shadow-md transition flex items-center justify-center space-x-1"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Agregar</span>
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        </form>
+      </section>
 
-      {/* MENSAJE DE ESTADO */}
-      {statusMessage && (
-        <div className="p-4 rounded-xl bg-slate-900 border border-amber-500/50 text-amber-300 text-sm font-medium">
-          {statusMessage}
+      {/* MENSAJES DE ESTADO */}
+      {feedbackMessage && (
+        <div
+          className={`p-3.5 rounded-xl border flex items-center space-x-2 text-xs font-bold ${
+            feedbackMessage.type === 'success'
+              ? 'bg-emerald-950/60 border-emerald-500 text-emerald-300'
+              : feedbackMessage.type === 'error'
+              ? 'bg-red-950/60 border-red-500 text-red-300'
+              : 'bg-slate-900 border-slate-700 text-slate-300'
+          }`}
+        >
+          {feedbackMessage.type === 'success' ? (
+            <Check className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+          ) : feedbackMessage.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
+          ) : (
+            <Users className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          )}
+          <span>{feedbackMessage.text}</span>
         </div>
       )}
 
       {/* ==================================================================== */}
-      {/* TABLA DE PREVISUALIZACIÓN DE ATLETAS */}
+      {/* 2. TABLA BORRADOR: GESTIÓN LOCAL (VER, EDITAR, ELIMINAR) */}
       {/* ==================================================================== */}
-      {parsedAthletes.length > 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-          <div className="p-4 bg-slate-950/60 border-b border-slate-800 flex items-center justify-between">
-            <span className="text-sm font-bold text-slate-200">
-              Previsualización de Nómina Sanitizada ({filteredAthletes.length} atletas)
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+        <div className="p-4 bg-slate-950/70 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-center space-x-3">
+            <span className="text-base font-black text-white flex items-center space-x-2">
+              <span>Nómina en Borrador</span>
+              <span className="text-xs bg-slate-800 text-slate-300 border border-slate-700 px-2.5 py-0.5 rounded-full font-mono">
+                {draftAthletes.length} atletas
+              </span>
             </span>
-
-            {/* Filtro por categoría */}
-            <select
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-              className="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-amber-400"
-            >
-              <option value="ALL">Todas las Categorías</option>
-              {categoryGroups.map((g) => (
-                <option key={g.name} value={g.name}>
-                  {g.name} ({g.athletes.length})
-                </option>
-              ))}
-            </select>
           </div>
 
-          <div className="overflow-x-auto max-h-80">
+          <div className="flex items-center space-x-2">
+            {draftAthletes.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearAll}
+                className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-red-950 text-slate-400 hover:text-red-300 border border-slate-700 transition flex items-center space-x-1"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Vaciar Borrador</span>
+              </button>
+            )}
+
+            {/* BOTÓN FINAL DE ENVÍO MASIVO */}
+            <button
+              type="button"
+              onClick={handleConfirmRegistrations}
+              disabled={draftAthletes.length === 0 || isSubmitting}
+              className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition shadow-lg flex items-center space-x-2 ${
+                draftAthletes.length === 0
+                  ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
+                  : isSubmitting
+                  ? 'bg-blue-600 text-white animate-pulse'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
+            >
+              <Save className="w-4 h-4" />
+              <span>
+                {isSubmitting
+                  ? 'Confirmando en BD...'
+                  : `Confirmar Inscripciones (${draftAthletes.length})`}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* TABLA DE ATLETAS */}
+        {draftAthletes.length === 0 ? (
+          <div className="p-12 text-center space-y-2 text-slate-500">
+            <Users className="w-10 h-10 mx-auto text-slate-600" />
+            <p className="text-sm font-bold">No hay atletas en el borrador temporal.</p>
+            <p className="text-xs">Usa el formulario superior para añadir atletas o importa un archivo CSV.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto max-h-96">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950 text-slate-400 uppercase font-mono tracking-wider sticky top-0">
+              <thead className="bg-slate-950 text-slate-400 uppercase font-mono tracking-wider sticky top-0 z-10 border-b border-slate-800">
                 <tr>
                   <th className="px-4 py-3">#</th>
-                  <th className="px-4 py-3">Nombre</th>
-                  <th className="px-4 py-3">RUT / DNI</th>
-                  <th className="px-4 py-3">Club</th>
-                  <th className="px-4 py-3">Categoría</th>
+                  <th className="px-4 py-3">RUT</th>
+                  <th className="px-4 py-3">Nombre Atleta</th>
+                  <th className="px-4 py-3">Club / Escuela</th>
+                  <th className="px-4 py-3">Año (Edad)</th>
                   <th className="px-4 py-3">Género</th>
-                  <th className="px-4 py-3">Estado</th>
+                  <th className="px-4 py-3">Categoría Oficial</th>
+                  <th className="px-4 py-3 text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {filteredAthletes.map((athlete, idx) => (
-                  <tr
-                    key={athlete.id}
-                    className={`hover:bg-slate-800/40 transition ${
-                      !athlete.isValid ? 'bg-red-950/20' : ''
-                    }`}
-                  >
-                    <td className="px-4 py-2.5 text-slate-500 font-mono">{idx + 1}</td>
-                    <td className="px-4 py-2.5 font-bold text-slate-200">{athlete.name}</td>
-                    <td className="px-4 py-2.5 font-mono text-slate-400">{athlete.rut_dni}</td>
-                    <td className="px-4 py-2.5 text-slate-300">{athlete.club_name}</td>
-                    <td className="px-4 py-2.5 text-amber-400 font-medium">{athlete.category}</td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={`px-2 py-0.5 rounded font-bold ${
-                          athlete.gender === 'M'
-                            ? 'bg-blue-950 text-blue-400'
-                            : 'bg-pink-950 text-pink-400'
-                        }`}
-                      >
-                        {athlete.gender}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {athlete.isValid ? (
-                        <span className="text-emerald-400 font-bold">✓ Válido</span>
-                      ) : (
+                {draftAthletes.map((athlete, idx) => {
+                  const isEditing = editingId === athlete.id;
+
+                  if (isEditing && editForm) {
+                    // FILA EN MODO EDICIÓN
+                    const editAvailable = getAvailableCategoriesForAthlete(
+                      editForm.birth_year,
+                      editForm.gender,
+                      currentYear
+                    );
+
+                    return (
+                      <tr key={athlete.id} className="bg-amber-950/20">
+                        <td className="px-4 py-3 font-mono text-slate-500">{idx + 1}</td>
+                        {/* Editar RUT */}
+                        <td className="px-4 py-2">
+                          <input
+                            type="text"
+                            value={editForm.rut_dni}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, rut_dni: e.target.value })
+                            }
+                            className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white font-mono"
+                          />
+                        </td>
+                        {/* Editar Nombre */}
+                        <td className="px-4 py-2">
+                          <input
+                            type="text"
+                            value={editForm.name}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, name: e.target.value })
+                            }
+                            className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white"
+                          />
+                        </td>
+                        {/* Editar Club */}
+                        <td className="px-4 py-2">
+                          <input
+                            type="text"
+                            value={editForm.club_name}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, club_name: e.target.value })
+                            }
+                            className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white"
+                          />
+                        </td>
+                        {/* Editar Año */}
+                        <td className="px-4 py-2 w-24">
+                          <input
+                            type="number"
+                            min={1940}
+                            max={currentYear}
+                            value={editForm.birth_year}
+                            onChange={(e) =>
+                              setEditForm({
+                                ...editForm,
+                                birth_year: parseInt(e.target.value, 10) || currentYear,
+                              })
+                            }
+                            className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white font-mono"
+                          />
+                        </td>
+                        {/* Editar Género */}
+                        <td className="px-4 py-2">
+                          <select
+                            value={editForm.gender}
+                            onChange={(e) =>
+                              setEditForm({
+                                ...editForm,
+                                gender: e.target.value as 'M' | 'F',
+                              })
+                            }
+                            className="bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white"
+                          >
+                            <option value="M">M</option>
+                            <option value="F">F</option>
+                          </select>
+                        </td>
+                        {/* Editar Categoría (Dropdown Dinámico) */}
+                        <td className="px-4 py-2">
+                          <select
+                            value={editForm.category}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, category: e.target.value })
+                            }
+                            className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white"
+                          >
+                            {/* Incluir categoría actual si no está en la lista estándar */}
+                            {!editAvailable.categories.includes(editForm.category) && (
+                              <option value={editForm.category}>
+                                {editForm.category}
+                              </option>
+                            )}
+                            {editAvailable.categories.map((c) => (
+                              <option key={c} value={c}>
+                                {c}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        {/* Acciones de Edición */}
+                        <td className="px-4 py-2 text-right space-x-1">
+                          <button
+                            type="button"
+                            onClick={handleSaveEdit}
+                            className="p-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white"
+                            title="Guardar cambios"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEdit}
+                            className="p-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300"
+                            title="Cancelar"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  // FILA EN MODO LECTURA NORMAL
+                  const age = currentYear - athlete.birth_year;
+
+                  return (
+                    <tr key={athlete.id} className="hover:bg-slate-800/40 transition">
+                      <td className="px-4 py-3 font-mono text-slate-500">{idx + 1}</td>
+                      <td className="px-4 py-3 font-mono font-bold text-slate-200">
+                        {athlete.rut_dni}
+                      </td>
+                      <td className="px-4 py-3 font-bold text-white">{athlete.name}</td>
+                      <td className="px-4 py-3 text-slate-300">{athlete.club_name}</td>
+                      <td className="px-4 py-3 font-mono text-slate-400">
+                        {athlete.birth_year} ({age}a)
+                      </td>
+                      <td className="px-4 py-3">
                         <span
-                          className="text-red-400 font-bold"
-                          title={athlete.errors.join(' | ')}
+                          className={`px-2 py-0.5 rounded font-bold ${
+                            athlete.gender === 'M'
+                              ? 'bg-blue-950 text-blue-400'
+                              : 'bg-pink-950 text-pink-400'
+                          }`}
                         >
-                          ✕ {athlete.errors[0]}
+                          {athlete.gender}
                         </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-200">
+                        {athlete.category}
+                      </td>
+                      <td className="px-4 py-3 text-right space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEdit(athlete)}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                          title="Editar atleta"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRow(athlete.id)}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-red-950 text-slate-300 hover:text-red-400 transition"
+                          title="Eliminar de borrador"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        </div>
+        )}
+      </section>
+
+      {/* ==================================================================== */}
+      {/* 3. RESUMEN DE LLAVES DERIVADAS DEL BORRADOR */}
+      {/* ==================================================================== */}
+      {categorySummaries.length > 0 && (
+        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+          <h3 className="text-sm font-bold text-slate-300 flex items-center space-x-2">
+            <span>Diagnóstico de Llaves en Borrador (Reglas IJF)</span>
+          </h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {categorySummaries.map((cat) => (
+              <div
+                key={cat.name}
+                className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between"
+              >
+                <div>
+                  <span className="text-xs font-bold text-white block truncate">
+                    {cat.name}
+                  </span>
+                  <span className="text-xs text-slate-400 mt-0.5 block">
+                    {cat.count} {cat.count === 1 ? 'atleta' : 'atletas'}
+                  </span>
+                </div>
+
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full font-bold uppercase ${
+                    cat.bracketType === 'BEST_OF_3'
+                      ? 'bg-purple-950 text-purple-400 border border-purple-800'
+                      : cat.bracketType === 'ROUND_ROBIN'
+                      ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                      : cat.bracketType === 'SINGLE_ELIMINATION'
+                      ? 'bg-blue-950 text-blue-400 border border-blue-800'
+                      : 'bg-red-950 text-red-400 border border-red-800'
+                  }`}
+                >
+                  {cat.bracketTypeLabel}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

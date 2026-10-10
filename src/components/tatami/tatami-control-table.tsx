@@ -42,6 +42,15 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   const [currentMatch, setCurrentMatch] = useState<LocalMatch>(initialMatch);
   useEffect(() => {
     setCurrentMatch(initialMatch);
+    setMatchTimeRemaining(initialMatch.match_duration_seconds || 240);
+    setIsClockRunning(false);
+    setActiveOsaekomi(null);
+    setOsaekomiSeconds(0);
+    setIsGoldenScore(false);
+    setMatchStatus(initialMatch.status || 'SCHEDULED');
+    setNextScheduledMatch(null);
+    setAutoAdvanceCountdown(null);
+    setIsQueueEmpty(false);
   }, [initialMatch]);
 
   // 1. Estado de la Pila de Eventos (Fuente Única de Verdad)
@@ -87,8 +96,10 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       try {
         await saveMatchLocally(currentMatch);
         const storedEvents = await getMatchEventsLocally(currentMatch.id);
-        if (storedEvents.length > 0) {
+        if (storedEvents && storedEvents.length > 0) {
           setEvents(storedEvents);
+        } else {
+          setEvents([]);
         }
       } catch (err) {
         console.error('Error cargando IndexedDB:', err);
@@ -168,8 +179,26 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
             round,
             status,
             current_match_time_seconds,
-            white_athlete_id,
-            blue_athlete_id
+            category:categories (
+              name,
+              match_duration_seconds
+            ),
+            white_athlete:athletes!matches_white_athlete_id_fkey (
+              id,
+              first_name,
+              last_name,
+              club:clubs (
+                name
+              )
+            ),
+            blue_athlete:athletes!matches_blue_athlete_id_fkey (
+              id,
+              first_name,
+              last_name,
+              club:clubs (
+                name
+              )
+            )
           `)
           .eq('tatami_number', tatamiNum)
           .eq('status', 'SCHEDULED')
@@ -179,18 +208,28 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
           .maybeSingle();
 
         if (!error && data) {
+          const rawData = data as any;
+          const whiteName = rawData.white_athlete
+            ? `${rawData.white_athlete.first_name} ${rawData.white_athlete.last_name}`
+            : 'Atleta Blanco';
+          const whiteClub = rawData.white_athlete?.club?.name || 'Independiente';
+          const blueName = rawData.blue_athlete
+            ? `${rawData.blue_athlete.first_name} ${rawData.blue_athlete.last_name}`
+            : 'Atleta Azul';
+          const blueClub = rawData.blue_athlete?.club?.name || 'Independiente';
+
           const nextLocal: LocalMatch = {
-            id: data.id,
-            tournament_id: data.tournament_id,
-            category_id: data.category_id,
-            category_name: currentMatch.category_name || 'Categoría Oficial',
-            tatami_number: data.tatami_number,
-            match_number: data.match_number,
-            white_athlete_name: 'Atleta Blanco',
-            white_club_name: 'Club Blanco',
-            blue_athlete_name: 'Atleta Azul',
-            blue_club_name: 'Club Azul',
-            match_duration_seconds: currentMatch.match_duration_seconds,
+            id: rawData.id,
+            tournament_id: rawData.tournament_id,
+            category_id: rawData.category_id,
+            category_name: rawData.category?.name || currentMatch.category_name || 'Categoría Oficial',
+            tatami_number: rawData.tatami_number,
+            match_number: rawData.match_number,
+            white_athlete_name: whiteName,
+            white_club_name: whiteClub,
+            blue_athlete_name: blueName,
+            blue_club_name: blueClub,
+            match_duration_seconds: rawData.category?.match_duration_seconds || currentMatch.match_duration_seconds || 240,
             status: 'SCHEDULED',
             current_time_seconds: 0,
             updated_at: new Date().toISOString(),
@@ -226,15 +265,15 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
     async (matchToLoad: LocalMatch) => {
       await saveMatchLocally(matchToLoad);
       const storedEvents = await getMatchEventsLocally(matchToLoad.id);
-      setEvents(storedEvents);
+      setEvents(storedEvents || []); // Limpiar completamente los eventos previos
 
       setCurrentMatch(matchToLoad);
-      setMatchTimeRemaining(matchToLoad.match_duration_seconds);
+      setMatchTimeRemaining(matchToLoad.match_duration_seconds || 240);
       setIsClockRunning(false);
       setActiveOsaekomi(null);
       setOsaekomiSeconds(0);
       setIsGoldenScore(false);
-      setMatchStatus(matchToLoad.status);
+      setMatchStatus('SCHEDULED');
       setNextScheduledMatch(null);
       setAutoAdvanceCountdown(null);
       setIsQueueEmpty(false);
@@ -258,7 +297,7 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
         active_osaekomi: null,
         osaekomi_seconds: 0,
         is_golden_score: false,
-        match_status: matchToLoad.status,
+        match_status: 'SCHEDULED',
         projection: projectMatchState([]),
         timestamp: Date.now(),
       };
