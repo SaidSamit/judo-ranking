@@ -18,6 +18,7 @@ import bcrypt from 'bcryptjs';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { confirmRegistrationsAction, DraftAthletePayload } from '@/app/actions/registrations';
 import { BASE_ATHLETES_ROSTER } from '@/lib/data/roster-data';
+import { getAvailableCategoriesForAthlete } from '@/lib/rules/judo-categories';
 
 export interface TournamentItem {
   id: string;
@@ -199,23 +200,25 @@ export async function createTournamentAction(
     });
 
     stationUpserts.push({
+      tournament_id: newId,
       organization_id: organizationId,
       name: stationName,
       slug,
       type: 'TATAMI_TABLE',
       tatami_number: i,
+      pin_code: pin,
       pin_hash: pinHash,
       is_active: true,
       updated_at: nowIso,
     });
   }
 
-  let injectedCount = 0;
-
-  // Inyección de deportistas seleccionada
+  // Inyección de deportistas seleccionada desde la base de datos
+  let athletesToInject: DraftAthletePayload[] = [];
   if (input.injectExistingAthletes) {
-    injectedCount = BASE_ATHLETES_ROSTER.length;
+    athletesToInject = await resolveExistingAthletesForTournament(organizationId);
   }
+  const injectedCount = athletesToInject.length;
 
   const newTournament: TournamentItem = {
     id: newId,
@@ -265,14 +268,19 @@ export async function createTournamentAction(
       console.warn('Error insertando torneo en Supabase:', tourError.message);
     }
 
-    // 3. Upsert estaciones físicas
-    await supabase.from('stations').upsert(stationUpserts, {
-      onConflict: 'organization_id,slug',
-    });
+    // 3. Upsert estaciones físicas vinculadas al nuevo torneo
+    const { error: stationErr } = await supabase.from('stations').upsert(stationUpserts);
+    if (stationErr && stationErr.message.includes('column')) {
+      // Fallback de compatibilidad si la migración de columnas aún no se ha ejecutado en Supabase
+      const legacyUpserts = stationUpserts.map(({ tournament_id, pin_code, ...rest }) => rest);
+      await supabase.from('stations').upsert(legacyUpserts, {
+        onConflict: 'organization_id,slug',
+      });
+    }
 
-    // 4. Si se solicitó inyección de atletas, ejecutamos la confirmación relacional
-    if (input.injectExistingAthletes && BASE_ATHLETES_ROSTER.length > 0) {
-      await confirmRegistrationsAction(BASE_ATHLETES_ROSTER, organizationId, newId);
+    // 4. Si se solicitó inyección de atletas, ejecutamos la confirmación relacional de los atletas reales
+    if (input.injectExistingAthletes && athletesToInject.length > 0) {
+      await confirmRegistrationsAction(athletesToInject, organizationId, newId);
     }
   } catch (dbErr) {
     console.warn('Operando con respaldo seguro de memoria:', dbErr);
@@ -282,7 +290,7 @@ export async function createTournamentAction(
     success: true,
     message: `Campeonato "${input.name.trim()}" creado exitosamente.${
       injectedCount > 0
-        ? ` Se inyectaron ${injectedCount} deportistas ingresados a sus categorías.`
+        ? ` Se inyectaron ${injectedCount} deportistas de la organización a sus categorías.`
         : ''
     }`,
     tournament: newTournament,
@@ -291,11 +299,92 @@ export async function createTournamentAction(
 }
 
 /**
+ * Consulta los atletas existentes de la organización en la base de datos
+ * y los mapea con sus categorías sugeridas según su edad y género.
+ */
+async function resolveExistingAthletesForTournament(
+  organizationId: string
+): Promise<DraftAthletePayload[]> {
+  try {
+    const supabase = createAdminClient();
+
+    // 1. Consultar todos los atletas registrados en la organización
+    const { data: dbAthletes, error } = await supabase
+      .from('athletes')
+      .select(`
+        id,
+        rut_dni,
+        first_name,
+        last_name,
+        gender,
+        birth_date,
+        club:clubs (
+          name
+        )
+      `)
+      .eq('organization_id', organizationId);
+
+    if (error || !dbAthletes || dbAthletes.length === 0) {
+      return BASE_ATHLETES_ROSTER;
+    }
+
+    // 2. Consultar inscripciones previas para reutilizar categorías habituales
+    const { data: recentRegs } = await supabase
+      .from('tournament_registrations')
+      .select(`
+        athlete_id,
+        category:categories (
+          name
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    const athleteCategoryMap = new Map<string, string>();
+    (recentRegs || []).forEach((reg: any) => {
+      if (reg.athlete_id && reg.category?.name && !athleteCategoryMap.has(reg.athlete_id)) {
+        athleteCategoryMap.set(reg.athlete_id, reg.category.name);
+      }
+    });
+
+    const currentYear = new Date().getFullYear();
+
+    return dbAthletes.map((ath: any) => {
+      const birthYear = ath.birth_date ? new Date(ath.birth_date).getFullYear() : 2008;
+      const gender = (ath.gender as 'M' | 'F') || 'M';
+      const clubName =
+        ath.club?.name || (Array.isArray(ath.club) ? ath.club[0]?.name : 'Independiente');
+
+      let categoryName = athleteCategoryMap.get(ath.id);
+      if (!categoryName) {
+        const catInfo = getAvailableCategoriesForAthlete(birthYear, gender, currentYear);
+        categoryName =
+          catInfo.categories[0] ||
+          (gender === 'F' ? 'Senior Femenino -52kg' : 'Senior Masculino -66kg');
+      }
+
+      return {
+        id: ath.id,
+        name: `${ath.first_name} ${ath.last_name}`.trim(),
+        club_name: clubName,
+        category: categoryName,
+        rut_dni: ath.rut_dni,
+        gender: gender,
+        birth_year: birthYear,
+        birth_date: ath.birth_date,
+      };
+    });
+  } catch (err) {
+    console.warn('[resolveExistingAthletesForTournament] Error, usando respaldo:', err);
+    return BASE_ATHLETES_ROSTER;
+  }
+}
+
+/**
  * Inyecta una nómina de deportistas a un campeonato específico.
  */
 export async function injectAthletesToTournamentAction(
   tournamentId: string,
-  athletesToInject: DraftAthletePayload[] = BASE_ATHLETES_ROSTER,
+  athletesToInject?: DraftAthletePayload[],
   organizationId: string = 'a0000000-0000-0000-0000-000000000001'
 ): Promise<{ success: boolean; count: number; message: string }> {
   if (!tournamentId) {
@@ -303,7 +392,12 @@ export async function injectAthletesToTournamentAction(
   }
 
   try {
-    const res = await confirmRegistrationsAction(athletesToInject, organizationId, tournamentId);
+    const list =
+      athletesToInject && athletesToInject.length > 0
+        ? athletesToInject
+        : await resolveExistingAthletesForTournament(organizationId);
+
+    const res = await confirmRegistrationsAction(list, organizationId, tournamentId);
 
     // Actualizar memoria
     inMemoryTournaments = inMemoryTournaments.map((t) =>
@@ -323,19 +417,10 @@ export async function injectAthletesToTournamentAction(
     };
   } catch (err: any) {
     console.warn('Error inyectando en Supabase, aplicando a memoria:', err);
-    inMemoryTournaments = inMemoryTournaments.map((t) =>
-      t.id === tournamentId
-        ? {
-            ...t,
-            athlete_count: (t.athlete_count || 0) + athletesToInject.length,
-          }
-        : t
-    );
-
     return {
       success: true,
-      count: athletesToInject.length,
-      message: `Se inyectaron ${athletesToInject.length} deportistas al campeonato (sesión activa).`,
+      count: 0,
+      message: `Error al inyectar deportistas: ${err.message}`,
     };
   }
 }

@@ -162,62 +162,103 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   });
 
   // ============================================================================
+  // Ref para asegurar que la finalización y búsqueda de siguiente combate se ejecute exactamente una vez por combate
+  const handledFinishedMatchIdRef = useRef<string | null>(null);
+
+  // ============================================================================
   // INTEGRACIÓN FASE 5: CONSUMO DE COLA DE COMBATES (AUTO-ADVANCE)
   // ============================================================================
   const fetchNextScheduledMatch = useCallback(
-    async (tatamiNum: number, currentId: string): Promise<LocalMatch | null> => {
+    async (
+      tatamiNum: number,
+      currentId: string,
+      currentMatchNumber?: number,
+      tournamentId?: string
+    ): Promise<LocalMatch | null> => {
       // 1. Intentar buscar en Supabase primero (fuente de verdad cloud)
       try {
         const supabase = createClient();
-        const { data, error } = await supabase
-          .from('matches')
-          .select(`
+        const baseSelect = `
+          id,
+          tournament_id,
+          category_id,
+          tatami_number,
+          match_number,
+          round,
+          status,
+          current_match_time_seconds,
+          category:categories (
+            name,
+            match_duration_seconds
+          ),
+          white_athlete:athletes!matches_white_athlete_id_fkey (
             id,
-            tournament_id,
-            category_id,
-            tatami_number,
-            match_number,
-            round,
-            status,
-            current_match_time_seconds,
-            category:categories (
-              name,
-              match_duration_seconds
-            ),
-            white_athlete:athletes!matches_white_athlete_id_fkey (
-              id,
-              first_name,
-              last_name,
-              club:clubs (
-                name
-              )
-            ),
-            blue_athlete:athletes!matches_blue_athlete_id_fkey (
-              id,
-              first_name,
-              last_name,
-              club:clubs (
-                name
-              )
+            first_name,
+            last_name,
+            club:clubs (
+              name
             )
-          `)
+          ),
+          blue_athlete:athletes!matches_blue_athlete_id_fkey (
+            id,
+            first_name,
+            last_name,
+            club:clubs (
+              name
+            )
+          )
+        `;
+
+        let query = supabase
+          .from('matches')
+          .select(baseSelect)
           .eq('tatami_number', tatamiNum)
           .eq('status', 'SCHEDULED')
-          .neq('id', currentId)
-          .order('match_number', { ascending: true })
-          .limit(1)
-          .maybeSingle();
+          .neq('id', currentId);
 
-        if (!error && data) {
-          const rawData = data as any;
-          const whiteName = rawData.white_athlete
-            ? `${rawData.white_athlete.first_name} ${rawData.white_athlete.last_name}`
-            : 'Atleta Blanco';
-          const whiteClub = rawData.white_athlete?.club?.name || 'Independiente';
-          const blueName = rawData.blue_athlete
-            ? `${rawData.blue_athlete.first_name} ${rawData.blue_athlete.last_name}`
-            : 'Atleta Azul';
-          const blueClub = rawData.blue_athlete?.club?.name || 'Independiente';
+        if (tournamentId) {
+          query = query.eq('tournament_id', tournamentId);
+        }
+
+        // Buscar prioritariamente el siguiente combate correlativo en la cola
+        let matchedData: any = null;
+        if (currentMatchNumber !== undefined && currentMatchNumber !== null) {
+          const { data: nextSeqData } = await query
+            .gt('match_number', currentMatchNumber)
+            .order('match_number', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (nextSeqData) {
+            matchedData = nextSeqData;
+          }
+        }
+
+        // Si no hay posterior, buscar el de menor match_number en el torneo
+        if (!matchedData) {
+          const { data: lowestData } = await query
+            .order('match_number', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (lowestData) {
+            matchedData = lowestData;
+          }
+        }
+
+        if (matchedData) {
+          const rawData = matchedData as any;
+          const whiteAth = Array.isArray(rawData.white_athlete) ? rawData.white_athlete[0] : rawData.white_athlete;
+          const blueAth = Array.isArray(rawData.blue_athlete) ? rawData.blue_athlete[0] : rawData.blue_athlete;
+
+          const whiteName = whiteAth
+            ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
+            : rawData.white_athlete_name || 'Por definir';
+          const whiteClub = whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente');
+          const blueName = blueAth
+            ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
+            : rawData.blue_athlete_name || 'Por definir';
+          const blueClub = blueAth?.club?.name || (Array.isArray(blueAth?.club) ? blueAth.club[0]?.name : 'Independiente');
 
           const nextLocal: LocalMatch = {
             id: rawData.id,
@@ -230,6 +271,10 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
             white_club_name: whiteClub,
             blue_athlete_name: blueName,
             blue_club_name: blueClub,
+            white_athlete_id: rawData.white_athlete_id || null,
+            blue_athlete_id: rawData.blue_athlete_id || null,
+            next_match_id: rawData.next_match_id || null,
+            next_match_slot: rawData.next_match_slot || null,
             match_duration_seconds: rawData.category?.match_duration_seconds || currentMatch.match_duration_seconds || 240,
             status: 'SCHEDULED',
             current_time_seconds: 0,
@@ -245,12 +290,24 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       try {
         const db = await getLocalDB();
         const matches = await db.getAllFromIndex('matches', 'by_tatami', tatamiNum);
-        const scheduled = matches
-          .filter((m) => m.status === 'SCHEDULED' && m.id !== currentId)
-          .sort((a, b) => a.match_number - b.match_number);
+        const filtered = matches.filter(
+          (m) =>
+            m.status === 'SCHEDULED' &&
+            m.id !== currentId &&
+            (!tournamentId || m.tournament_id === tournamentId)
+        );
 
-        if (scheduled.length > 0) {
-          return scheduled[0];
+        if (filtered.length > 0) {
+          if (currentMatchNumber !== undefined && currentMatchNumber !== null) {
+            const afterCurrent = filtered
+              .filter((m) => m.match_number > currentMatchNumber)
+              .sort((a, b) => a.match_number - b.match_number);
+            if (afterCurrent.length > 0) {
+              return afterCurrent[0];
+            }
+          }
+          const sorted = filtered.sort((a, b) => a.match_number - b.match_number);
+          return sorted[0];
         }
       } catch (err) {
         console.warn('[Queue] Error consultando IndexedDB:', err);
@@ -264,6 +321,13 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   // Carga e inicialización del siguiente combate en la mesa
   const loadNextMatch = useCallback(
     async (matchToLoad: LocalMatch) => {
+      // Limpiar inmediatamente contadores y estados de finalización
+      setAutoAdvanceCountdown(null);
+      setNextScheduledMatch(null);
+      setMatchStatus('SCHEDULED');
+      setIsQueueEmpty(false);
+      handledFinishedMatchIdRef.current = null;
+
       await saveMatchLocally(matchToLoad);
       const storedEvents = await getMatchEventsLocally(matchToLoad.id);
       setEvents(storedEvents || []); // Limpiar completamente los eventos previos
@@ -274,10 +338,6 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       setActiveOsaekomi(null);
       setOsaekomiSeconds(0);
       setIsGoldenScore(false);
-      setMatchStatus('SCHEDULED');
-      setNextScheduledMatch(null);
-      setAutoAdvanceCountdown(null);
-      setIsQueueEmpty(false);
 
       if (typeof window !== 'undefined' && window.history?.pushState) {
         window.history.pushState(null, '', `/tatami/${matchToLoad.id}`);
@@ -310,6 +370,12 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   // Al finalizar el combate actual (FINISHED), sellar, propagar ganador en el árbol y buscar el siguiente
   useEffect(() => {
     if (matchStatus === 'FINISHED') {
+      // Evitar ejecuciones duplicadas para el mismo combate finalizado
+      if (handledFinishedMatchIdRef.current === currentMatch.id) {
+        return;
+      }
+      handledFinishedMatchIdRef.current = currentMatch.id;
+
       let isSubscribed = true;
 
       // 1. Guardar resultado final en IndexedDB
@@ -318,8 +384,8 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
         status: 'FINISHED',
         winner_id: projection.winner
           ? projection.winner === 'WHITE'
-            ? currentMatch.white_athlete_name
-            : currentMatch.blue_athlete_name
+            ? currentMatch.white_athlete_id || null
+            : currentMatch.blue_athlete_id || null
           : null,
         win_reason: projection.win_reason,
         updated_at: new Date().toISOString(),
@@ -375,7 +441,12 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
           .finally(() => {
             if (!isSubscribed) return;
             // 3. Buscar próximo combate en la cola (después de haber propagado)
-            fetchNextScheduledMatch(currentMatch.tatami_number, currentMatch.id).then((next) => {
+            fetchNextScheduledMatch(
+              currentMatch.tatami_number,
+              currentMatch.id,
+              currentMatch.match_number,
+              currentMatch.tournament_id
+            ).then((next) => {
               if (!isSubscribed) return;
               if (next) {
                 setNextScheduledMatch(next);
@@ -387,7 +458,12 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
           });
       } else {
         // Fallback si no hubo ganador explícito
-        fetchNextScheduledMatch(currentMatch.tatami_number, currentMatch.id).then((next) => {
+        fetchNextScheduledMatch(
+          currentMatch.tatami_number,
+          currentMatch.id,
+          currentMatch.match_number,
+          currentMatch.tournament_id
+        ).then((next) => {
           if (!isSubscribed) return;
           if (next) {
             setNextScheduledMatch(next);

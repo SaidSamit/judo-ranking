@@ -482,10 +482,14 @@ function InteractiveMatchCard({
           className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
             match.status === 'SCHEDULED'
               ? 'bg-blue-950 text-blue-400 border border-blue-900'
+              : match.status === 'PENDING'
+              ? 'bg-slate-800 text-slate-400 border border-slate-700'
+              : match.status === 'FINISHED'
+              ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
               : 'bg-slate-800 text-slate-400'
           }`}
         >
-          {match.status}
+          {match.status === 'PENDING' ? 'EN ESPERA' : match.status}
         </span>
       </div>
 

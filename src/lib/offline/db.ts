@@ -25,7 +25,7 @@ export interface LocalMatch {
   blue_athlete_name: string;
   blue_club_name: string;
   match_duration_seconds: number;
-  status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED';
+  status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED' | 'PENDING';
   current_time_seconds: number;
   winner_id?: string | null;
   win_reason?: string | null;

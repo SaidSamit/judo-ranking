@@ -79,18 +79,33 @@ export async function confirmRegistrationsAction(
       );
     }
 
+    let targetTourId = tournamentId;
+    if (!targetTourId || targetTourId === 'e0000000-0000-0000-0000-000000000001') {
+      const { data: activeTour } = await supabase
+        .from('tournaments')
+        .select('id')
+        .eq('status', 'ACTIVE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeTour?.id) {
+        targetTourId = activeTour.id;
+      }
+    }
+
     // b. Asegurar Torneo en la tabla 'tournaments' de Supabase
     const { data: tourData } = await supabase
       .from('tournaments')
       .select('id, name')
-      .eq('id', tournamentId)
+      .eq('id', targetTourId)
       .maybeSingle();
 
     if (!tourData) {
       const nowIso = new Date().toISOString();
       const { error: tourInsertErr } = await supabase.from('tournaments').upsert(
         {
-          id: tournamentId,
+          id: targetTourId,
           organization_id: organizationId,
           name: 'Torneo Regional Iquique Open 2026',
           status: 'ACTIVE',
@@ -124,7 +139,7 @@ export async function confirmRegistrationsAction(
     const { data: existingCategories, error: catFetchError } = await supabase
       .from('categories')
       .select('id, name')
-      .eq('tournament_id', tournamentId);
+      .eq('tournament_id', targetTourId);
 
     if (catFetchError) {
       throw new Error(`Error consultando categorías: ${catFetchError.message}`);
@@ -163,7 +178,7 @@ export async function confirmRegistrationsAction(
 
         return {
           organization_id: organizationId,
-          tournament_id: tournamentId,
+          tournament_id: targetTourId,
           name: catName,
           age_group: ageGroup,
           gender: gender,
@@ -303,7 +318,7 @@ export async function confirmRegistrationsAction(
 
       return {
         organization_id: organizationId,
-        tournament_id: tournamentId,
+        tournament_id: targetTourId,
         category_id: categoryId,
         athlete_id: athleteId,
         club_id: ath.club_id,

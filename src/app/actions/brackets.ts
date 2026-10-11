@@ -10,6 +10,8 @@ import {
   Competitor,
   BracketResult,
   GeneratedMatch,
+  sequenceTatamiMatches,
+  estimateCategoryMatchesCount,
 } from '@/lib/rules/bracket-engine';
 
 export interface CategoryBracketStatus {
@@ -33,16 +35,29 @@ export interface CategoryBracketStatus {
  * si aún no tienen un tatami asignado.
  */
 export async function getTournamentCategoriesStatusAction(
-  tournamentId: string = 'e0000000-0000-0000-0000-000000000001'
+  tournamentId?: string
 ): Promise<{ success: boolean; categories: CategoryBracketStatus[]; error?: string }> {
   try {
     const supabase = createAdminClient();
+
+    let targetTourId = tournamentId;
+    if (!targetTourId || targetTourId === 'e0000000-0000-0000-0000-000000000001') {
+      const { data: activeTour } = await supabase
+        .from('tournaments')
+        .select('id')
+        .eq('status', 'ACTIVE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      targetTourId = activeTour?.id || 'e0000000-0000-0000-0000-000000000001';
+    }
 
     // 1. Consultar el campeonato para conocer su cantidad de tatamis
     const { data: tourData } = await supabase
       .from('tournaments')
       .select('id, config')
-      .eq('id', tournamentId)
+      .eq('id', targetTourId)
       .maybeSingle();
 
     const tatamiCount = Number((tourData?.config as any)?.tatami_count) || 2;
@@ -51,7 +66,7 @@ export async function getTournamentCategoriesStatusAction(
     const { data: categories, error: catErr } = await supabase
       .from('categories')
       .select('id, name, age_group, gender, assigned_tatami_number')
-      .eq('tournament_id', tournamentId)
+      .eq('tournament_id', targetTourId)
       .order('name', { ascending: true });
 
     if (catErr) throw new Error(catErr.message);
@@ -60,26 +75,65 @@ export async function getTournamentCategoriesStatusAction(
       return { success: true, categories: [] };
     }
 
-    // 3. Distribución equitativa entre tatamis si no tienen tatami asignado
-    for (let idx = 0; idx < categories.length; idx++) {
-      const cat = categories[idx];
-      if (!cat.assigned_tatami_number || cat.assigned_tatami_number <= 0) {
-        const assignedTatami = (idx % tatamiCount) + 1;
-        cat.assigned_tatami_number = assignedTatami;
-        await supabase
-          .from('categories')
-          .update({ assigned_tatami_number: assignedTatami })
-          .eq('id', cat.id);
-      }
-    }
-
-    // 4. Consultar inscripciones con pesaje
+    // 3. Consultar inscripciones para calcular carga real y balancear equitativamente
     const { data: registrations, error: regErr } = await supabase
       .from('tournament_registrations')
       .select('id, category_id, weigh_in_status')
-      .eq('tournament_id', tournamentId);
+      .eq('tournament_id', targetTourId);
 
     if (regErr) throw new Error(regErr.message);
+
+    // Calcular atletas por categoría para estimar el volumen de combates
+    const athleteCountByCat = new Map<string, number>();
+    (registrations || []).forEach((r) => {
+      athleteCountByCat.set(r.category_id, (athleteCountByCat.get(r.category_id) || 0) + 1);
+    });
+
+    // Carga acumulada por tatami
+    const tatamiLoad = new Map<number, number>();
+    for (let t = 1; t <= tatamiCount; t++) {
+      tatamiLoad.set(t, 0);
+    }
+
+    // Contabilizar la carga de categorías que ya tienen tatami asignado válido
+    categories.forEach((cat) => {
+      if (cat.assigned_tatami_number && cat.assigned_tatami_number >= 1 && cat.assigned_tatami_number <= tatamiCount) {
+        const count = athleteCountByCat.get(cat.id) || 4;
+        const est = estimateCategoryMatchesCount(count);
+        tatamiLoad.set(cat.assigned_tatami_number, (tatamiLoad.get(cat.assigned_tatami_number) || 0) + est);
+      }
+    });
+
+    // Categorías sin asignar: ordenarlas por carga estimada descendente (Algoritmo LPT)
+    const unassignedCats = categories.filter(
+      (c) => !c.assigned_tatami_number || c.assigned_tatami_number <= 0 || c.assigned_tatami_number > tatamiCount
+    );
+    unassignedCats.sort((a, b) => {
+      const loadA = estimateCategoryMatchesCount(athleteCountByCat.get(a.id) || 4);
+      const loadB = estimateCategoryMatchesCount(athleteCountByCat.get(b.id) || 4);
+      return loadB - loadA;
+    });
+
+    for (const cat of unassignedCats) {
+      let bestTatami = 1;
+      let minLoad = Infinity;
+      for (let t = 1; t <= tatamiCount; t++) {
+        const currentLoad = tatamiLoad.get(t) || 0;
+        if (currentLoad < minLoad) {
+          minLoad = currentLoad;
+          bestTatami = t;
+        }
+      }
+
+      cat.assigned_tatami_number = bestTatami;
+      const catLoad = estimateCategoryMatchesCount(athleteCountByCat.get(cat.id) || 4);
+      tatamiLoad.set(bestTatami, minLoad + catLoad);
+
+      await supabase
+        .from('categories')
+        .update({ assigned_tatami_number: bestTatami })
+        .eq('id', cat.id);
+    }
 
     // 5. Consultar si ya hay combates generados en este torneo
     const { data: existingMatches, error: matchErr } = await supabase
@@ -157,10 +211,10 @@ export async function generateCategoryMatchesAction(params: {
       organizationId = 'a0000000-0000-0000-0000-000000000001',
     } = params;
 
-    // 1. Obtener la categoría
+    // 1. Obtener la categoría y su contexto relacional
     const { data: category, error: catErr } = await supabase
       .from('categories')
-      .select('id, name, assigned_tatami_number, match_duration_seconds')
+      .select('id, tournament_id, organization_id, name, assigned_tatami_number, match_duration_seconds')
       .eq('id', categoryId)
       .single();
 
@@ -168,6 +222,8 @@ export async function generateCategoryMatchesAction(params: {
       throw new Error(`Categoría no encontrada: ${catErr?.message || 'ID inválido'}`);
     }
 
+    const actualTourId = category.tournament_id || tournamentId;
+    const actualOrgId = category.organization_id || organizationId;
     const assignedTatami = category.assigned_tatami_number || tatamiNumber;
 
     // 2. Obtener competidores con pesaje aprobado (PASSED)
@@ -211,7 +267,7 @@ export async function generateCategoryMatchesAction(params: {
     const { data: lastMatch } = await supabase
       .from('matches')
       .select('match_number')
-      .eq('tournament_id', tournamentId)
+      .eq('tournament_id', actualTourId)
       .eq('tatami_number', assignedTatami)
       .order('match_number', { ascending: false })
       .limit(1)
@@ -221,8 +277,8 @@ export async function generateCategoryMatchesAction(params: {
 
     // 4. Ejecutar el motor matemático de llaves (Fase 5 / 6)
     const bracketResult = generateCategoryBracket(competitors, {
-      organization_id: organizationId,
-      tournament_id: tournamentId,
+      organization_id: actualOrgId,
+      tournament_id: actualTourId,
       category_id: category.id,
       category_name: category.name,
       tatami_number: assignedTatami,
@@ -235,13 +291,13 @@ export async function generateCategoryMatchesAction(params: {
       .from('matches')
       .delete()
       .eq('category_id', categoryId)
-      .eq('tournament_id', tournamentId);
+      .eq('tournament_id', actualTourId);
 
     // 6. Inserción pura y limpia en PostgreSQL con columnas nativas
     const matchesToInsert = bracketResult.matches.map((m) => ({
       id: m.id,
-      organization_id: m.organization_id || organizationId,
-      tournament_id: m.tournament_id || tournamentId,
+      organization_id: m.organization_id || actualOrgId,
+      tournament_id: m.tournament_id || actualTourId,
       category_id: m.category_id || categoryId,
       tatami_number: m.tatami_number || assignedTatami,
       match_number: m.match_number,
@@ -263,6 +319,9 @@ export async function generateCategoryMatchesAction(params: {
       console.error('[generateCategoryMatchesAction] Error insertando en Supabase:', insertErr.message);
       throw new Error(`Fallo guardando combates en la base de datos: ${insertErr.message}`);
     }
+
+    // Re-secuenciar toda la cola del tatami aplicando la regla de descanso IJF
+    await resequenceTatamiMatchesAction(actualTourId, assignedTatami);
 
     return {
       success: true,
@@ -646,18 +705,28 @@ export async function saveModifiedBracketAction(params: {
       tournamentId = 'e0000000-0000-0000-0000-000000000001',
     } = params;
 
-    // 1. Eliminar combates anteriores de esta categoría en este torneo
+    // 1. Obtener la categoría para conocer el tournament_id y organization_id reales
+    const { data: cat } = await supabase
+      .from('categories')
+      .select('id, tournament_id, organization_id')
+      .eq('id', categoryId)
+      .maybeSingle();
+
+    const actualTourId = cat?.tournament_id || tournamentId;
+    const actualOrgId = cat?.organization_id || 'a0000000-0000-0000-0000-000000000001';
+
+    // 2. Eliminar combates anteriores de esta categoría en este torneo
     await supabase
       .from('matches')
       .delete()
       .eq('category_id', categoryId)
-      .eq('tournament_id', tournamentId);
+      .eq('tournament_id', actualTourId);
 
-    // 2. Inserción pura en PostgreSQL
+    // 3. Inserción pura en PostgreSQL
     const matchesToInsert = bracketResult.matches.map((m) => ({
       id: m.id,
-      organization_id: m.organization_id,
-      tournament_id: m.tournament_id || tournamentId,
+      organization_id: m.organization_id || actualOrgId,
+      tournament_id: m.tournament_id || actualTourId,
       category_id: m.category_id || categoryId,
       tatami_number: m.tatami_number,
       match_number: m.match_number,
@@ -685,5 +754,212 @@ export async function saveModifiedBracketAction(params: {
   } catch (err: any) {
     console.error('[saveModifiedBracketAction] Error:', err);
     return { success: false, message: 'Fallo al guardar modificaciones de la llave.', error: err.message };
+  }
+}
+
+/**
+ * Re-secuencia todos los combates de un tatami utilizando el secuenciador anticonsecutivo IJF.
+ * Garantiza números correlativos continuos (1, 2, 3...) y descansos balanceados.
+ */
+export async function resequenceTatamiMatchesAction(
+  tournamentId: string,
+  tatamiNumber: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+
+    const { data: matches, error } = await supabase
+      .from('matches')
+      .select('*')
+      .eq('tournament_id', tournamentId)
+      .eq('tatami_number', tatamiNumber)
+      .order('match_number', { ascending: true });
+
+    if (error || !matches || matches.length === 0) {
+      return { success: true };
+    }
+
+    const sequenced = sequenceTatamiMatches(matches as any[], 1);
+
+    for (const m of sequenced) {
+      await supabase
+        .from('matches')
+        .update({ match_number: m.match_number })
+        .eq('id', m.id);
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    console.error('[resequenceTatamiMatchesAction] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Reasigna una categoría completa a un nuevo tatami.
+ * Si ya tiene combates generados, migra los combates y re-secuencia ambos tatamis afectados.
+ */
+export async function reassignCategoryTatamiAction(params: {
+  categoryId: string;
+  newTatamiNumber: number;
+  tournamentId: string;
+}): Promise<{ success: boolean; message: string; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { categoryId, newTatamiNumber, tournamentId } = params;
+
+    if (!categoryId || !newTatamiNumber || !tournamentId) {
+      return { success: false, message: 'Parámetros incompletos.', error: 'INVALID_PARAMS' };
+    }
+
+    // 1. Obtener la categoría actual
+    const { data: category, error: catErr } = await supabase
+      .from('categories')
+      .select('id, name, assigned_tatami_number')
+      .eq('id', categoryId)
+      .single();
+
+    if (catErr || !category) {
+      return { success: false, message: 'Categoría no encontrada.', error: catErr?.message };
+    }
+
+    const oldTatami = category.assigned_tatami_number;
+
+    // 2. Actualizar el tatami asignado en la tabla categories
+    const { error: updateErr } = await supabase
+      .from('categories')
+      .update({ assigned_tatami_number: newTatamiNumber })
+      .eq('id', categoryId);
+
+    if (updateErr) {
+      return { success: false, message: 'Error actualizando categoría.', error: updateErr.message };
+    }
+
+    // 3. Si la categoría ya tiene combates generados, migrar sus combates al nuevo tatami
+    const { data: matchesToMove } = await supabase
+      .from('matches')
+      .select('id')
+      .eq('tournament_id', tournamentId)
+      .eq('category_id', categoryId);
+
+    if (matchesToMove && matchesToMove.length > 0) {
+      await supabase
+        .from('matches')
+        .update({ tatami_number: newTatamiNumber })
+        .eq('tournament_id', tournamentId)
+        .eq('category_id', categoryId);
+
+      // Re-secuenciar ambos tatamis
+      await resequenceTatamiMatchesAction(tournamentId, newTatamiNumber);
+      if (oldTatami && oldTatami !== newTatamiNumber) {
+        await resequenceTatamiMatchesAction(tournamentId, oldTatami);
+      }
+    }
+
+    return {
+      success: true,
+      message: `Categoría "${category.name}" reasignada exitosamente al Tatami #${newTatamiNumber}.`,
+    };
+  } catch (err: any) {
+    console.error('[reassignCategoryTatamiAction] Error:', err);
+    return { success: false, message: 'Error inesperado reasignando tatami.', error: err.message };
+  }
+}
+
+/**
+ * Crea una nueva categoría dentro de un campeonato activo y le asigna un tatami.
+ */
+export async function createTournamentCategoryAction(params: {
+  tournamentId: string;
+  name: string;
+  age_group?: string;
+  gender?: 'M' | 'F' | 'MIXED';
+  max_weight?: number;
+  match_duration_seconds?: number;
+  assigned_tatami_number?: number;
+}): Promise<{ success: boolean; category?: any; message: string; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const {
+      tournamentId,
+      name,
+      age_group = 'Senior',
+      gender = 'M',
+      max_weight = 73,
+      match_duration_seconds = 240,
+      assigned_tatami_number,
+    } = params;
+
+    if (!tournamentId || !name) {
+      return { success: false, message: 'Nombre y torneo son obligatorios.', error: 'INVALID_PARAMS' };
+    }
+
+    // 1. Obtener organización del torneo
+    const { data: tourData } = await supabase
+      .from('tournaments')
+      .select('id, organization_id, config')
+      .eq('id', tournamentId)
+      .single();
+
+    const orgId = tourData?.organization_id || 'a0000000-0000-0000-0000-000000000001';
+    const tatamiCount = Number((tourData?.config as any)?.tatami_count) || 2;
+
+    // 2. Determinar tatami asignado si no fue especificado
+    let targetTatami = assigned_tatami_number;
+    if (!targetTatami || targetTatami <= 0) {
+      const { data: existingCats } = await supabase
+        .from('categories')
+        .select('assigned_tatami_number')
+        .eq('tournament_id', tournamentId);
+
+      const counts = new Map<number, number>();
+      for (let t = 1; t <= tatamiCount; t++) counts.set(t, 0);
+      (existingCats || []).forEach((c) => {
+        if (c.assigned_tatami_number) {
+          counts.set(c.assigned_tatami_number, (counts.get(c.assigned_tatami_number) || 0) + 1);
+        }
+      });
+
+      let minCount = Infinity;
+      targetTatami = 1;
+      for (let t = 1; t <= tatamiCount; t++) {
+        const val = counts.get(t) || 0;
+        if (val < minCount) {
+          minCount = val;
+          targetTatami = t;
+        }
+      }
+    }
+
+    // 3. Insertar la nueva categoría
+    const newCategoryPayload = {
+      tournament_id: tournamentId,
+      organization_id: orgId,
+      name: name.trim(),
+      age_group,
+      gender,
+      max_weight,
+      match_duration_seconds,
+      assigned_tatami_number: targetTatami,
+    };
+
+    const { data: createdCat, error: insertErr } = await supabase
+      .from('categories')
+      .insert(newCategoryPayload)
+      .select()
+      .single();
+
+    if (insertErr) {
+      return { success: false, message: 'Error creando la categoría.', error: insertErr.message };
+    }
+
+    return {
+      success: true,
+      category: createdCat,
+      message: `Categoría "${name}" creada exitosamente y asignada al Tatami #${targetTatami}.`,
+    };
+  } catch (err: any) {
+    console.error('[createTournamentCategoryAction] Error:', err);
+    return { success: false, message: 'Error inesperado creando categoría.', error: err.message };
   }
 }

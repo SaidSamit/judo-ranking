@@ -33,10 +33,23 @@ export interface WeighInSummary {
  * Obtiene la lista de atletas registrados para la estación de pesaje.
  */
 export async function getWeighInAthletesAction(
-  tournamentId: string = 'e0000000-0000-0000-0000-000000000001'
+  tournamentId?: string
 ): Promise<{ success: boolean; athletes: WeighInAthlete[]; error?: string }> {
   try {
     const supabase = createAdminClient();
+
+    let targetTourId = tournamentId;
+    if (!targetTourId || targetTourId === 'e0000000-0000-0000-0000-000000000001') {
+      const { data: activeTour } = await supabase
+        .from('tournaments')
+        .select('id')
+        .eq('status', 'ACTIVE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      targetTourId = activeTour?.id || 'e0000000-0000-0000-0000-000000000001';
+    }
 
     const { data, error } = await supabase
       .from('tournament_registrations')
@@ -62,7 +75,7 @@ export async function getWeighInAthletesAction(
           )
         )
       `)
-      .eq('tournament_id', tournamentId);
+      .eq('tournament_id', targetTourId);
 
     if (error) {
       console.warn('[getWeighInAthletesAction] Error consultando Supabase:', error.message);
@@ -103,7 +116,8 @@ export async function getWeighInAthletesAction(
 
 /**
  * Registra el peso real del atleta y su estado de aprobación.
- * Si se especifica newCategoryName, busca o crea la nueva categoría y reubica la inscripción.
+ * Si se especifica newCategoryName, busca o crea la nueva categoría respetando
+ * el género y división etaria reales del atleta.
  */
 export async function recordAthleteWeightAction(params: {
   registrationId: string;
@@ -124,6 +138,27 @@ export async function recordAthleteWeightAction(params: {
       organizationId = 'a0000000-0000-0000-0000-000000000001',
     } = params;
 
+    // 1. Consultar la inscripción actual para recuperar los datos reales del atleta
+    const { data: regInfo } = await supabase
+      .from('tournament_registrations')
+      .select(`
+        id,
+        tournament_id,
+        organization_id,
+        athlete:athletes (
+          id,
+          gender,
+          birth_date
+        )
+      `)
+      .eq('id', registrationId)
+      .maybeSingle();
+
+    const actualTourId = regInfo?.tournament_id || tournamentId;
+    const actualOrgId = regInfo?.organization_id || organizationId;
+    const athleteData = regInfo?.athlete as any;
+    const athleteGender = athleteData?.gender || 'M';
+
     let targetCategoryId: string | undefined;
 
     // Si hubo cambio de categoría (por exceso de peso a categoría superior)
@@ -132,23 +167,46 @@ export async function recordAthleteWeightAction(params: {
       const { data: existingCat } = await supabase
         .from('categories')
         .select('id')
-        .eq('tournament_id', tournamentId)
+        .eq('tournament_id', actualTourId)
         .ilike('name', cleanCat)
         .maybeSingle();
 
       if (existingCat) {
         targetCategoryId = existingCat.id;
       } else {
-        // Crear la nueva categoría
+        // Derivar dinámicamente género y grupo etario
+        const lower = cleanCat.toLowerCase();
+        const isFemale =
+          lower.includes('femenin') ||
+          lower.includes('damas') ||
+          lower.includes('mujeres') ||
+          athleteGender === 'F';
+        const gender: 'M' | 'F' = isFemale ? 'F' : 'M';
+
+        let ageGroup = 'Cadetes';
+        if (lower.includes('sub-11') || lower.includes('sub 11')) ageGroup = 'Sub-11';
+        else if (lower.includes('sub-13') || lower.includes('sub 13')) ageGroup = 'Sub-13';
+        else if (lower.includes('sub-15') || lower.includes('sub 15')) ageGroup = 'Sub-15';
+        else if (lower.includes('cadet') || lower.includes('sub-18') || lower.includes('sub 18')) ageGroup = 'Cadetes';
+        else if (lower.includes('junior') || lower.includes('sub-21') || lower.includes('sub 21')) ageGroup = 'Junior';
+        else if (lower.includes('senior') || lower.includes('adulto')) ageGroup = 'Senior';
+        else if (lower.includes('master')) ageGroup = 'Master';
+
+        const weightMatch = cleanCat.match(/([+-]?\d+(?:\.\d+)?)\s*kg/i);
+        const maxWeight = weightMatch ? parseFloat(weightMatch[1].replace('+', '')) : null;
+        const matchDuration = ageGroup.startsWith('Sub-1') ? 180 : 240;
+
+        // Crear la nueva categoría sin valores hardcodeados
         const { data: newCat, error: createCatErr } = await supabase
           .from('categories')
           .insert({
-            organization_id: organizationId,
-            tournament_id: tournamentId,
+            organization_id: actualOrgId,
+            tournament_id: actualTourId,
             name: cleanCat,
-            age_group: 'Cadetes',
-            gender: 'M',
-            match_duration_seconds: 240,
+            age_group: ageGroup,
+            gender: gender,
+            max_weight: maxWeight,
+            match_duration_seconds: matchDuration,
             is_official: true,
           })
           .select('id')

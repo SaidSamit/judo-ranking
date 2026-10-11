@@ -47,6 +47,8 @@ import {
   Tv,
   Monitor,
   PlayCircle,
+  Plus,
+  X,
 } from 'lucide-react';
 import { TournamentItem, setActiveTournamentAction, injectAthletesToTournamentAction } from '@/app/actions/tournaments';
 import {
@@ -64,6 +66,8 @@ import {
   saveModifiedBracketAction,
   getCategoryBracketAction,
   CategoryBracketStatus,
+  reassignCategoryTatamiAction,
+  createTournamentCategoryAction,
 } from '@/app/actions/brackets';
 import {
   getTournamentCredentialsAction,
@@ -116,6 +120,15 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const [categoryBrackets, setCategoryBrackets] = useState<Record<string, BracketResult>>({});
   const [loadingBrackets, setLoadingBrackets] = useState(false);
   const [isGeneratingBrackets, setIsGeneratingBrackets] = useState(false);
+  const [isReassigning, setIsReassigning] = useState(false);
+  const [isNewCategoryModalOpen, setIsNewCategoryModalOpen] = useState(false);
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatAgeGroup, setNewCatAgeGroup] = useState('Senior');
+  const [newCatGender, setNewCatGender] = useState<'M' | 'F' | 'MIXED'>('M');
+  const [newCatWeight, setNewCatWeight] = useState('73');
+  const [newCatDuration, setNewCatDuration] = useState('4');
+  const [newCatTatami, setNewCatTatami] = useState('0');
 
   // ==========================================================================
   // ESTADOS DE PESTAÑA 4: CREDENCIALES PIN
@@ -449,6 +462,91 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       setFeedback({ type: 'error', text: 'Error guardando modificaciones de la llave.' });
     }
   };
+
+  const handleReassignTatami = async (categoryId: string, newTatamiNumber: number) => {
+    setIsReassigning(true);
+    try {
+      const res = await reassignCategoryTatamiAction({
+        categoryId,
+        newTatamiNumber,
+        tournamentId: tournament.id,
+      });
+      if (res.success) {
+        setCategories((prev) =>
+          prev.map((c) => (c.id === categoryId ? { ...c, assigned_tatami_number: newTatamiNumber } : c))
+        );
+        setFeedback({
+          type: 'success',
+          text: res.message,
+        });
+        await loadBrackets();
+      } else {
+        setFeedback({
+          type: 'error',
+          text: res.message || 'Error al reasignar tatami.',
+        });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error al reasignar tatami.' });
+    } finally {
+      setIsReassigning(false);
+    }
+  };
+
+  const handleCreateCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCatName.trim()) return;
+    setIsCreatingCategory(true);
+    try {
+      const res = await createTournamentCategoryAction({
+        tournamentId: tournament.id,
+        name: newCatName.trim(),
+        age_group: newCatAgeGroup,
+        gender: newCatGender,
+        max_weight: Number(newCatWeight) || 73,
+        match_duration_seconds: (Number(newCatDuration) || 4) * 60,
+        assigned_tatami_number: Number(newCatTatami) > 0 ? Number(newCatTatami) : undefined,
+      });
+      if (res.success) {
+        setIsNewCategoryModalOpen(false);
+        setNewCatName('');
+        setFeedback({
+          type: 'success',
+          text: res.message,
+        });
+        await loadBrackets();
+      } else {
+        setFeedback({
+          type: 'error',
+          text: res.message || 'Error creando la categoría.',
+        });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error al crear la categoría.' });
+    } finally {
+      setIsCreatingCategory(false);
+    }
+  };
+
+  const tatamiDistribution = useMemo(() => {
+    const totalTatamis = tournament.tatami_count || 2;
+    const stats = new Map<number, { categoriesCount: number; athletesCount: number }>();
+    for (let t = 1; t <= totalTatamis; t++) {
+      stats.set(t, { categoriesCount: 0, athletesCount: 0 });
+    }
+    categories.forEach((cat) => {
+      const t = cat.assigned_tatami_number || 1;
+      const cur = stats.get(t) || { categoriesCount: 0, athletesCount: 0 };
+      stats.set(t, {
+        categoriesCount: cur.categoriesCount + 1,
+        athletesCount: cur.athletesCount + (cat.passed_weigh_in || cat.total_registered || 0),
+      });
+    });
+    return Array.from(stats.entries()).map(([tatamiNum, data]) => ({
+      tatamiNum,
+      ...data,
+    }));
+  }, [categories, tournament.tatami_count]);
 
   // ==========================================================================
   // MANEJADORES DE CREDENCIALES
@@ -1025,16 +1123,47 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={loadBrackets}
-                disabled={loadingBrackets}
-                className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loadingBrackets ? 'animate-spin' : ''}`} />
-                <span>Actualizar</span>
-              </button>
+              <div className="flex items-center space-x-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsNewCategoryModalOpen(true)}
+                  className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                  <span>Nueva Categoría</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={loadBrackets}
+                  disabled={loadingBrackets}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition flex items-center space-x-1 border border-slate-700"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingBrackets ? 'animate-spin' : ''}`} />
+                  <span>Actualizar</span>
+                </button>
+              </div>
             </div>
+
+            {/* BALANCEO DE CARGA POR TATAMI */}
+            {tatamiDistribution.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 p-2.5 bg-slate-950/60 rounded-xl border border-slate-800/80">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Distribución de Carga:
+                </span>
+                {tatamiDistribution.map((t) => (
+                  <div
+                    key={t.tatamiNum}
+                    className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-amber-400 shadow-sm" />
+                    <span className="text-amber-400 font-bold">Tatami #{t.tatamiNum}:</span>
+                    <span className="text-slate-300">
+                      {t.categoriesCount} cat. ({t.athletesCount} atletas)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {categories.length === 0 ? (
               <div className="p-12 text-center space-y-2 text-slate-500">
@@ -1107,10 +1236,33 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   <h3 className="text-base font-black text-white flex items-center space-x-2">
                     <span>{activeCategory.name}</span>
                     <span className="text-xs text-amber-400 font-mono">
-                      (Tatami {activeCategory.assigned_tatami_number})
+                      (Tatami #{activeCategory.assigned_tatami_number})
                     </span>
                   </h3>
-                  <p className="text-xs text-slate-400">
+
+                  {/* SELECTOR RÁPIDO DE REASIGNACIÓN DE TATAMI */}
+                  <div className="flex items-center space-x-2 mt-2">
+                    <span className="text-xs text-slate-400 font-medium">Reasignar Tatami:</span>
+                    <div className="flex items-center space-x-1">
+                      {Array.from({ length: tournament.tatami_count || 2 }, (_, i) => i + 1).map((tNum) => (
+                        <button
+                          key={tNum}
+                          type="button"
+                          onClick={() => handleReassignTatami(activeCategory.id, tNum)}
+                          disabled={isReassigning || activeCategory.assigned_tatami_number === tNum}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                            activeCategory.assigned_tatami_number === tNum
+                              ? 'bg-amber-500 text-slate-950 font-black shadow'
+                              : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 border border-slate-700'
+                          } ${isReassigning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          Tatami {tNum}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-400 mt-1.5">
                     Tipo de Cruce:{' '}
                     <strong className="text-white">
                       {activeCategory.bracket_type === 'ROUND_ROBIN'
@@ -1306,6 +1458,141 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               ))}
             </div>
           </section>
+        </div>
+      )}
+
+      {/* MODAL: CREAR NUEVA CATEGORÍA EN VIVO */}
+      {isNewCategoryModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-white flex items-center space-x-2">
+                <Plus className="w-5 h-5 text-amber-400" />
+                <span>Nueva Categoría de Combate</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsNewCategoryModalOpen(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCategory} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Nombre de la Categoría *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="ej: Senior Masculino -73kg"
+                  value={newCatName}
+                  onChange={(e) => setNewCatName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    División de Edad
+                  </label>
+                  <select
+                    value={newCatAgeGroup}
+                    onChange={(e) => setNewCatAgeGroup(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                  >
+                    <option value="Infantil">Infantil</option>
+                    <option value="Sub-15">Sub-15</option>
+                    <option value="Cadetes (Sub-18)">Cadetes (Sub-18)</option>
+                    <option value="Junior (Sub-21)">Junior (Sub-21)</option>
+                    <option value="Senior">Senior</option>
+                    <option value="Master">Master</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    Género
+                  </label>
+                  <select
+                    value={newCatGender}
+                    onChange={(e) => setNewCatGender(e.target.value as any)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                  >
+                    <option value="M">Masculino</option>
+                    <option value="F">Femenino</option>
+                    <option value="MIXED">Mixto</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    Peso Límite (kg)
+                  </label>
+                  <input
+                    type="number"
+                    value={newCatWeight}
+                    onChange={(e) => setNewCatWeight(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-300 block mb-1">
+                    Duración (minutos)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={newCatDuration}
+                    onChange={(e) => setNewCatDuration(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Tatami Asignado
+                </label>
+                <select
+                  value={newCatTatami}
+                  onChange={(e) => setNewCatTatami(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                >
+                  <option value="0">⚡ Auto-balancear según carga</option>
+                  {Array.from({ length: tournament.tatami_count || 2 }, (_, i) => i + 1).map((tNum) => (
+                    <option key={tNum} value={tNum}>
+                      Tatami #{tNum}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsNewCategoryModalOpen(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingCategory}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition shadow"
+                >
+                  {isCreatingCategory ? 'Creando...' : 'Crear Categoría'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

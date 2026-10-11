@@ -363,6 +363,7 @@ function generateSingleElimination(
 
   let currentMatchNum = opts.start_match_number || 1;
   const matchesByRound: GeneratedMatch[][] = [];
+  const allMatchesMap = new Map<string, GeneratedMatch>();
 
   // Construir la estructura de rondas desde la primera hasta la Final
   let currentRoundSlots: { athlete: Competitor | null; fromMatchId?: string; fromSlot?: 'WHITE' | 'BLUE' }[] =
@@ -418,6 +419,19 @@ function generateSingleElimination(
       };
 
       roundMatches.push(newMatch);
+      allMatchesMap.set(matchId, newMatch);
+
+      // Si este slot proviene del ganador de un combate anterior, enlazarlo inmediatamente
+      if (slotA.fromMatchId && allMatchesMap.has(slotA.fromMatchId)) {
+        const prevMatchA = allMatchesMap.get(slotA.fromMatchId)!;
+        prevMatchA.next_match_id = matchId;
+        prevMatchA.next_match_slot = 'WHITE';
+      }
+      if (slotB.fromMatchId && allMatchesMap.has(slotB.fromMatchId)) {
+        const prevMatchB = allMatchesMap.get(slotB.fromMatchId)!;
+        prevMatchB.next_match_id = matchId;
+        prevMatchB.next_match_slot = 'BLUE';
+      }
 
       // El ganador de este combate alimentará el siguiente slot de la siguiente ronda
       nextRoundSlots.push({
@@ -430,22 +444,6 @@ function generateSingleElimination(
       matchesByRound.push(roundMatches);
     }
     currentRoundSlots = nextRoundSlots;
-  }
-
-  // Enlazar los `next_match_id` y `next_match_slot` entre rondas consecutivas
-  for (let rIdx = 0; rIdx < matchesByRound.length - 1; rIdx++) {
-    const currentRound = matchesByRound[rIdx];
-    const nextRound = matchesByRound[rIdx + 1];
-
-    currentRound.forEach((currMatch, idx) => {
-      const nextMatchIdx = Math.floor(idx / 2);
-      const isWhiteSlot = idx % 2 === 0;
-
-      if (nextRound[nextMatchIdx]) {
-        currMatch.next_match_id = nextRound[nextMatchIdx].id;
-        currMatch.next_match_slot = isWhiteSlot ? 'WHITE' : 'BLUE';
-      }
-    });
   }
 
   // Aplanar todos los combates reales en orden cronológico de cola
@@ -485,14 +483,133 @@ export function generateCategoryBracket(
   }
 
   const count = competitors.length;
+  let result: BracketResult;
 
   if (count === 2) {
-    return generateBestOf3(competitors, options);
+    result = generateBestOf3(competitors, options);
+  } else if (count >= 3 && count <= 5) {
+    result = generateRoundRobin(competitors, options);
+  } else {
+    result = generateSingleElimination(competitors, options);
   }
 
-  if (count >= 3 && count <= 5) {
-    return generateRoundRobin(competitors, options);
+  // Optimizar la secuencia interna de la categoría con la regla de descanso IJF
+  if (result.matches && result.matches.length > 1) {
+    result.matches = sequenceTatamiMatches(result.matches, options.start_match_number || 1);
   }
 
-  return generateSingleElimination(competitors, options);
+  return result;
+}
+
+/**
+ * Estima la cantidad de combates que producirá una categoría según la cantidad de competidores pesados.
+ */
+export function estimateCategoryMatchesCount(athleteCount: number): number {
+  if (athleteCount <= 1) return 0;
+  if (athleteCount === 2) return 3; // Best of 3
+  if (athleteCount === 3) return 3; // Round Robin (3 cruces)
+  if (athleteCount === 4) return 6; // Round Robin (6 cruces)
+  if (athleteCount === 5) return 10; // Round Robin (10 cruces)
+  return athleteCount - 1; // Eliminación simple
+}
+
+/**
+ * REGLA OFICIAL IJF (SECCIÓN 7.2 - TIEMPOS DE DESCANSO):
+ * Secuenciador Anticonsecutivo de Tatami.
+ * Dado un conjunto de combates que se disputarán en un tatami (pueden pertenecer a una
+ * o múltiples categorías/rondas), reordena los combates de manera que:
+ * 1. NUNCA se llame al mismo judoka en dos combates consecutivos a menos que sea
+ *    matemáticamente imposible (ej: categoría aislada de 2 o 4 participantes sin otros cruces).
+ * 2. Si hay múltiples categorías o fases en el tatami, se intercalan ordenadamente
+ *    (ej: Cat A R1 -> Cat B R1 -> Cat A R2 -> Cat B R2) permitiendo un descanso natural de 10-20 min.
+ * 3. Conserva el orden de avance lógico (rondas iniciales antes que semifinales o finales).
+ * 4. Reasigna los números de combate correlativamente (1, 2, 3...) sin dejar huecos.
+ */
+export function sequenceTatamiMatches(
+  matches: GeneratedMatch[],
+  startMatchNumber: number = 1
+): GeneratedMatch[] {
+  if (!matches || matches.length <= 1) {
+    return matches.map((m, idx) => ({ ...m, match_number: startMatchNumber + idx }));
+  }
+
+  function getRoundWeight(round: string): number {
+    const r = (round || '').toUpperCase();
+    if (r.startsWith('RR_R1') || r.startsWith('R64') || r.startsWith('R32')) return 1;
+    if (r.startsWith('RR_R2') || r.startsWith('R16')) return 2;
+    if (r.startsWith('RR_R3') || r.startsWith('QF')) return 3;
+    if (r.startsWith('RR_R4') || r.startsWith('SF')) return 4;
+    if (r.startsWith('RR_R5') || r.startsWith('FINAL') || r.includes('M3_DECIDER')) return 5;
+    return 3;
+  }
+
+  const remaining = [...matches];
+  const ordered: GeneratedMatch[] = [];
+  const lastFoughtAt = new Map<string, number>();
+
+  let currentIndex = 0;
+
+  while (remaining.length > 0) {
+    const prevMatch = ordered.length > 0 ? ordered[ordered.length - 1] : null;
+    const prevAthletes = new Set<string>();
+    if (prevMatch) {
+      if (prevMatch.white_athlete_id) prevAthletes.add(prevMatch.white_athlete_id);
+      if (prevMatch.blue_athlete_id) prevAthletes.add(prevMatch.blue_athlete_id);
+    }
+
+    // Candidatos que NO comparten ningún atleta con el combate inmediatamente anterior
+    const nonConsecutiveCandidates = remaining.filter((m) => {
+      const whiteInPrev = m.white_athlete_id ? prevAthletes.has(m.white_athlete_id) : false;
+      const blueInPrev = m.blue_athlete_id ? prevAthletes.has(m.blue_athlete_id) : false;
+      return !whiteInPrev && !blueInPrev;
+    });
+
+    const candidates = nonConsecutiveCandidates.length > 0 ? nonConsecutiveCandidates : remaining;
+
+    // Seleccionar el mejor candidato:
+    // 1. Menor peso de ronda (respetar la progresión del torneo)
+    // 2. Si el combate anterior era de la misma categoría, dar prioridad a una categoría diferente
+    // 3. Mayor tiempo de descanso acumulado para sus atletas
+    candidates.sort((a, b) => {
+      const weightA = getRoundWeight(a.round);
+      const weightB = getRoundWeight(b.round);
+      if (weightA !== weightB) {
+        return weightA - weightB;
+      }
+
+      if (prevMatch) {
+        const diffCatA = a.category_id !== prevMatch.category_id ? 0 : 1;
+        const diffCatB = b.category_id !== prevMatch.category_id ? 0 : 1;
+        if (diffCatA !== diffCatB) {
+          return diffCatA - diffCatB;
+        }
+      }
+
+      const lastA1 = a.white_athlete_id ? (lastFoughtAt.get(a.white_athlete_id) ?? -10) : -10;
+      const lastA2 = a.blue_athlete_id ? (lastFoughtAt.get(a.blue_athlete_id) ?? -10) : -10;
+      const minRestA = Math.max(lastA1, lastA2);
+
+      const lastB1 = b.white_athlete_id ? (lastFoughtAt.get(b.white_athlete_id) ?? -10) : -10;
+      const lastB2 = b.blue_athlete_id ? (lastFoughtAt.get(b.blue_athlete_id) ?? -10) : -10;
+      const minRestB = Math.max(lastB1, lastB2);
+
+      return minRestA - minRestB;
+    });
+
+    const chosen = candidates[0];
+    const chosenIndex = remaining.indexOf(chosen);
+    remaining.splice(chosenIndex, 1);
+
+    ordered.push({
+      ...chosen,
+      match_number: startMatchNumber + currentIndex,
+    });
+
+    if (chosen.white_athlete_id) lastFoughtAt.set(chosen.white_athlete_id, currentIndex);
+    if (chosen.blue_athlete_id) lastFoughtAt.set(chosen.blue_athlete_id, currentIndex);
+
+    currentIndex++;
+  }
+
+  return ordered;
 }

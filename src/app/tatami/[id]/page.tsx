@@ -1,18 +1,34 @@
+// ==============================================================================
+// RUTA DINÁMICA: MESA DE CONTROL DE TATAMI (/tatami/[id])
+// ==============================================================================
+
+import React from 'react';
 import { TatamiControlTable } from '@/components/tatami/tatami-control-table';
+import { TatamiStandbyView } from '@/components/tatami/tatami-standby-view';
 import { LocalMatch } from '@/lib/offline/db';
 import { isValidUuid } from '@/lib/utils/uuid';
 import { getMatchByIdAction, getTatamiQueueMatchesAction } from '@/app/actions/brackets';
+import { createAdminClient } from '@/lib/supabase/admin';
 
 interface TatamiPageProps {
   params: Promise<{ id: string }>;
 }
 
-const DEMO_MATCH_UUID = '10000000-0000-0000-0000-000000000001';
-
 export default async function TatamiPage({ params }: TatamiPageProps) {
   const { id } = await params;
+  const tatamiNum = parseInt(id.replace(/\D/g, '') || '1', 10);
 
   let loadedMatch: LocalMatch | null = null;
+
+  // Consultar campeonato activo para resolver su contexto y nombre oficial
+  const supabase = createAdminClient();
+  const { data: activeTour } = await supabase
+    .from('tournaments')
+    .select('id, name')
+    .eq('status', 'ACTIVE')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   // 1. Si el parámetro es un UUID de combate específico (ej: desde "Llamar a Tatami")
   if (isValidUuid(id)) {
@@ -22,30 +38,32 @@ export default async function TatamiPage({ params }: TatamiPageProps) {
     }
   } else {
     // 2. Si el parámetro es un número o slug de tatami (ej: /tatami/1 o /tatami/tatami-1)
-    const tatamiNum = parseInt(id.replace(/\D/g, '') || '1', 10);
-    const queueRes = await getTatamiQueueMatchesAction(tatamiNum);
+    const queueRes = await getTatamiQueueMatchesAction(tatamiNum, activeTour?.id);
     if (queueRes.success && queueRes.matches.length > 0) {
-      // Tomar el primer combate pendiente/programado en la cola
+      // Tomar el primer combate activo o programado en la cola (con atletas ya definidos)
       const firstScheduled =
-        queueRes.matches.find((m: any) => m.status === 'SCHEDULED' || m.status === 'ONGOING') ||
-        queueRes.matches[0];
+        queueRes.matches.find((m: any) => m.status === 'SCHEDULED' || m.status === 'ONGOING');
 
       if (firstScheduled) {
         loadedMatch = {
           id: firstScheduled.id,
-          tournament_id: 'e0000000-0000-0000-0000-000000000001',
-          category_id: firstScheduled.category?.id || 'f0000000-0000-0000-0000-000000000001',
+          tournament_id: firstScheduled.tournament_id || activeTour?.id || '',
+          category_id: firstScheduled.category?.id || firstScheduled.category_id || '',
           category_name: firstScheduled.category?.name || 'Categoría Oficial',
           tatami_number: firstScheduled.tatami_number,
           match_number: firstScheduled.match_number,
           white_athlete_name: firstScheduled.white_athlete
             ? `${firstScheduled.white_athlete.first_name} ${firstScheduled.white_athlete.last_name}`
-            : 'Atleta Blanco',
-          white_club_name: firstScheduled.white_athlete?.club?.name || 'Independiente',
+            : firstScheduled.white_athlete_name || 'Atleta Blanco',
+          white_club_name: firstScheduled.white_athlete?.club?.name || firstScheduled.white_club_name || 'Independiente',
           blue_athlete_name: firstScheduled.blue_athlete
             ? `${firstScheduled.blue_athlete.first_name} ${firstScheduled.blue_athlete.last_name}`
-            : 'Atleta Azul',
-          blue_club_name: firstScheduled.blue_athlete?.club?.name || 'Independiente',
+            : firstScheduled.blue_athlete_name || 'Atleta Azul',
+          blue_club_name: firstScheduled.blue_athlete?.club?.name || firstScheduled.blue_club_name || 'Independiente',
+          white_athlete_id: firstScheduled.white_athlete_id || firstScheduled.white_athlete?.id || null,
+          blue_athlete_id: firstScheduled.blue_athlete_id || firstScheduled.blue_athlete?.id || null,
+          next_match_id: firstScheduled.next_match_id || null,
+          next_match_slot: firstScheduled.next_match_slot || null,
           match_duration_seconds: firstScheduled.category?.match_duration_seconds || 240,
           status: firstScheduled.status || 'SCHEDULED',
           current_time_seconds: 0,
@@ -55,23 +73,15 @@ export default async function TatamiPage({ params }: TatamiPageProps) {
     }
   }
 
-  // 3. Fallback en caso de que no haya combate en la base de datos aún
-  const resolvedMatch: LocalMatch = loadedMatch || {
-    id: isValidUuid(id) ? id : DEMO_MATCH_UUID,
-    tournament_id: 'e0000000-0000-0000-0000-000000000001',
-    category_id: 'f0000000-0000-0000-0000-000000000001',
-    category_name: 'Cadetes (Sub-18) Masculino -60kg',
-    tatami_number: 1,
-    match_number: 1,
-    white_athlete_name: 'Carlos Muñoz',
-    white_club_name: 'Club de Judo Hiroshima',
-    blue_athlete_name: 'Matías Silva',
-    blue_club_name: 'Judo Club Alto Hospicio',
-    match_duration_seconds: 240,
-    status: 'SCHEDULED',
-    current_time_seconds: 0,
-    updated_at: new Date().toISOString(),
-  };
+  // 3. Si no hay combate programado en la cola de este tatami, mostrar pantalla de espera oficial
+  if (!loadedMatch) {
+    return (
+      <TatamiStandbyView
+        tatamiNumber={tatamiNum}
+        tournamentName={activeTour?.name || 'Campeonato Oficial de Judo'}
+      />
+    );
+  }
 
-  return <TatamiControlTable initialMatch={resolvedMatch} />;
+  return <TatamiControlTable initialMatch={loadedMatch} />;
 }

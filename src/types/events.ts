@@ -82,7 +82,7 @@ export interface BroadcastMatchPayload {
   active_osaekomi: CombatantColor | null;
   osaekomi_seconds: number;
   is_golden_score: boolean;
-  match_status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED';
+  match_status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED' | 'PENDING';
   projection: MatchProjection;
   timestamp: number;
 }

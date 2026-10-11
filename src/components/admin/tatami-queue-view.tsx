@@ -32,7 +32,7 @@ interface QueueMatch {
   white_club_name: string;
   blue_athlete_name: string;
   blue_club_name: string;
-  status: 'SCHEDULED' | 'ONGOING' | 'FINISHED';
+  status: 'SCHEDULED' | 'ONGOING' | 'FINISHED' | 'PENDING';
   current_time_seconds?: number;
 }
 
@@ -92,9 +92,10 @@ export function TatamiQueueView({
   const stats = useMemo(() => {
     const total = matches.length;
     const scheduled = matches.filter((m) => m.status === 'SCHEDULED').length;
+    const pending = matches.filter((m) => m.status === 'PENDING').length;
     const ongoing = matches.filter((m) => m.status === 'ONGOING').length;
     const finished = matches.filter((m) => m.status === 'FINISHED').length;
-    return { total, scheduled, ongoing, finished };
+    return { total, scheduled, pending, ongoing, finished };
   }, [matches]);
 
   // Manejador: Llamar a Tatami (Redirigir al motor de arbitraje)
@@ -149,15 +150,21 @@ export function TatamiQueueView({
       </header>
 
       {/* MÉTRICAS DE LA COLA */}
-      <section className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <section className="grid grid-cols-2 sm:grid-cols-5 gap-4">
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
           <span className="text-xs text-slate-400 block font-bold">Total Combates</span>
           <span className="text-2xl font-black text-white mt-1 block">{stats.total}</span>
         </div>
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <span className="text-xs text-blue-400 block font-bold">Programados (Cola)</span>
+          <span className="text-xs text-blue-400 block font-bold">Listos (Cola)</span>
           <span className="text-2xl font-black text-blue-400 mt-1 block">
             {stats.scheduled}
+          </span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-xs text-slate-400 block font-bold">En Espera (Árbol)</span>
+          <span className="text-2xl font-black text-slate-400 mt-1 block">
+            {stats.pending}
           </span>
         </div>
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -296,20 +303,28 @@ export function TatamiQueueView({
                           ? 'bg-amber-950 text-amber-400 border border-amber-800'
                           : match.status === 'FINISHED'
                           ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                          : match.status === 'PENDING'
+                          ? 'bg-slate-800 text-slate-400 border border-slate-700'
                           : 'bg-blue-950 text-blue-400 border border-blue-800'
                       }`}
                     >
-                      {match.status}
+                      {match.status === 'PENDING' ? 'EN ESPERA' : match.status}
                     </span>
 
-                    <button
-                      type="button"
-                      onClick={() => handleCallToTatami(match.id)}
-                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl shadow-lg transition flex items-center space-x-1.5"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Llamar a Tatami</span>
-                    </button>
+                    {match.status === 'PENDING' ? (
+                      <span className="text-[11px] text-slate-500 font-medium italic px-3 py-1 bg-slate-950/60 border border-slate-800/80 rounded-xl">
+                        Esperando Ganador
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleCallToTatami(match.id)}
+                        className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl shadow-lg transition flex items-center space-x-1.5"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        <span>Llamar a Tatami</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               );

@@ -15,7 +15,9 @@ import {
   ChevronRight,
   ExternalLink,
   ShieldCheck,
+  LogOut,
 } from 'lucide-react';
+import { logoutAdminAction } from '@/app/actions/auth';
 
 export function AdminTopHeader() {
   const pathname = usePathname();
@@ -84,6 +86,16 @@ export function AdminTopHeader() {
           <span className="hidden md:inline">Ver TV Realtime</span>
           <ExternalLink className="w-3 h-3 text-slate-400" />
         </Link>
+
+        {/* CERRAR SESIÓN */}
+        <button
+          onClick={() => logoutAdminAction()}
+          className="flex items-center space-x-1.5 px-3 py-1 rounded-lg bg-slate-900 hover:bg-red-950/40 text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-900/50 transition font-sans font-bold text-xs cursor-pointer"
+          title="Cerrar sesión de Director"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Salir</span>
+        </button>
       </div>
     </header>
   );
