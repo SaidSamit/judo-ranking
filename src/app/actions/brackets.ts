@@ -689,6 +689,172 @@ export async function getMatchByIdAction(
 }
 
 /**
+ * Obtiene el siguiente combate programado (SCHEDULED) para un tatami.
+ * Ejecuta en el servidor con privilegios administrativos (bypasseando RLS).
+ * 1. Prioriza el siguiente correlativo (match_number > currentMatchNumber).
+ * 2. Si no hay combates posteriores, busca combates programados anteriores pendientes (recuperación de combates saltados).
+ */
+export async function getNextScheduledTatamiMatchAction(params: {
+  tatamiNumber: number;
+  tournamentId?: string;
+  currentMatchNumber?: number;
+  currentMatchId?: string;
+}): Promise<{ success: boolean; match?: any; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { tatamiNumber, tournamentId, currentMatchNumber, currentMatchId } = params;
+
+    let targetTourId = tournamentId;
+    if (!targetTourId) {
+      const { data: activeTour } = await supabase
+        .from('tournaments')
+        .select('id')
+        .eq('status', 'ACTIVE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      targetTourId = activeTour?.id;
+    }
+
+    const selectQuery = `
+      id,
+      tournament_id,
+      category_id,
+      tatami_number,
+      match_number,
+      round,
+      status,
+      white_athlete_id,
+      blue_athlete_id,
+      next_match_id,
+      next_match_slot,
+      winner_id,
+      white_score,
+      blue_score,
+      current_match_time_seconds,
+      category:categories (
+        id,
+        name,
+        match_duration_seconds
+      ),
+      white_athlete:athletes!matches_white_athlete_id_fkey (
+        id,
+        first_name,
+        last_name,
+        club:clubs (
+          name
+        )
+      ),
+      blue_athlete:athletes!matches_blue_athlete_id_fkey (
+        id,
+        first_name,
+        last_name,
+        club:clubs (
+          name
+        )
+      )
+    `;
+
+    let nextMatchData: any = null;
+
+    // 1. Prioridad: Siguiente combate correlativo (match_number > currentMatchNumber)
+    if (currentMatchNumber !== undefined && currentMatchNumber !== null) {
+      let subsequentQuery = supabase
+        .from('matches')
+        .select(selectQuery)
+        .eq('tatami_number', tatamiNumber)
+        .eq('status', 'SCHEDULED')
+        .gt('match_number', currentMatchNumber);
+
+      if (targetTourId) {
+        subsequentQuery = subsequentQuery.eq('tournament_id', targetTourId);
+      }
+      if (currentMatchId) {
+        subsequentQuery = subsequentQuery.neq('id', currentMatchId);
+      }
+
+      const { data: subsequentData } = await subsequentQuery
+        .order('match_number', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (subsequentData) {
+        nextMatchData = subsequentData;
+      }
+    }
+
+    // 2. Si no hay posteriores, buscar si quedó algún combate programado pendiente anterior
+    if (!nextMatchData) {
+      let lowestQuery = supabase
+        .from('matches')
+        .select(selectQuery)
+        .eq('tatami_number', tatamiNumber)
+        .eq('status', 'SCHEDULED');
+
+      if (targetTourId) {
+        lowestQuery = lowestQuery.eq('tournament_id', targetTourId);
+      }
+      if (currentMatchId) {
+        lowestQuery = lowestQuery.neq('id', currentMatchId);
+      }
+
+      const { data: lowestData } = await lowestQuery
+        .order('match_number', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (lowestData) {
+        nextMatchData = lowestData;
+      }
+    }
+
+    if (!nextMatchData) {
+      return { success: true, match: null };
+    }
+
+    const rawData = nextMatchData as any;
+    const whiteAth = Array.isArray(rawData?.white_athlete) ? rawData.white_athlete[0] : rawData?.white_athlete;
+    const blueAth = Array.isArray(rawData?.blue_athlete) ? rawData.blue_athlete[0] : rawData?.blue_athlete;
+
+    const whiteName = whiteAth
+      ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
+      : 'Atleta Blanco';
+    const blueName = blueAth
+      ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
+      : 'Atleta Azul';
+
+    const categoryObj = Array.isArray(rawData?.category) ? rawData.category[0] : rawData?.category;
+
+    const matchPayload = {
+      id: rawData.id,
+      tournament_id: rawData.tournament_id,
+      category_id: rawData.category_id,
+      category_name: categoryObj?.name || 'Categoría Oficial',
+      tatami_number: rawData.tatami_number,
+      match_number: rawData.match_number,
+      white_athlete_name: whiteName,
+      white_club_name: whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente'),
+      blue_athlete_name: blueName,
+      blue_club_name: blueAth?.club?.name || (Array.isArray(blueAth?.club) ? blueAth.club[0]?.name : 'Independiente'),
+      match_duration_seconds: categoryObj?.match_duration_seconds || 240,
+      status: rawData.status || 'SCHEDULED',
+      current_time_seconds: rawData.current_match_time_seconds || 0,
+      next_match_id: rawData.next_match_id || null,
+      next_match_slot: rawData.next_match_slot || null,
+      white_athlete_id: rawData.white_athlete_id || null,
+      blue_athlete_id: rawData.blue_athlete_id || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    return { success: true, match: matchPayload };
+  } catch (err: any) {
+    console.error('[getNextScheduledTatamiMatchAction] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+
+/**
  * Guarda las modificaciones manuales que el Director realizó en el sorteo (BracketViewer)
  * sincronizándolas en la base de datos Supabase con sus columnas nativas.
  */

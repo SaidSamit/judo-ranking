@@ -4,7 +4,7 @@
 
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -20,8 +20,10 @@ import {
   Sparkles,
   ArrowLeft,
   RefreshCw,
+  Radio,
 } from 'lucide-react';
-import { getTatamiQueueMatchesAction } from '@/app/actions/brackets';
+import { getTatamiQueueMatchesAction, resequenceTatamiMatchesAction } from '@/app/actions/brackets';
+import { createClient } from '@/lib/supabase/client';
 
 interface QueueMatch {
   id: string;
@@ -54,39 +56,94 @@ export function TatamiQueueView({
   const router = useRouter();
   const [matches, setMatches] = useState<QueueMatch[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isResequencing, setIsResequencing] = useState(false);
+  const [resequenceMessage, setResequenceMessage] = useState<string | null>(null);
 
   // Cargar combates asignados al tatami en este torneo
-  const loadMatches = async () => {
-    setLoading(true);
-    try {
-      const res = await getTatamiQueueMatchesAction(tatamiNumber, tournamentId);
-      if (res.success && res.matches.length > 0) {
-        const mapped: QueueMatch[] = res.matches.map((m: any) => ({
-          id: m.id,
-          match_number: m.match_number,
-          category_name: m.category?.name || 'Categoría Oficial',
-          round_name: m.round_name || m.round || 'Ronda Oficial',
-          white_athlete_name: m.white_athlete_name || 'Por definir',
-          white_club_name: m.white_club_name || 'Independiente',
-          blue_athlete_name: m.blue_athlete_name || 'Por definir',
-          blue_club_name: m.blue_club_name || 'Independiente',
-          status: m.status || 'SCHEDULED',
-        }));
-        setMatches(mapped);
-      } else {
-        setMatches([]);
+  const loadMatches = useCallback(
+    async (isSilent = false) => {
+      if (!isSilent) setLoading(true);
+      try {
+        const res = await getTatamiQueueMatchesAction(tatamiNumber, tournamentId);
+        if (res.success && res.matches.length > 0) {
+          const mapped: QueueMatch[] = res.matches.map((m: any) => ({
+            id: m.id,
+            match_number: m.match_number,
+            category_name: m.category?.name || 'Categoría Oficial',
+            round_name: m.round_name || m.round || 'Ronda Oficial',
+            white_athlete_name: m.white_athlete_name || 'Por definir',
+            white_club_name: m.white_club_name || 'Independiente',
+            blue_athlete_name: m.blue_athlete_name || 'Por definir',
+            blue_club_name: m.blue_club_name || 'Independiente',
+            status: m.status || 'SCHEDULED',
+          }));
+          setMatches(mapped);
+        } else {
+          setMatches([]);
+        }
+      } catch (err: any) {
+        console.error(err);
+        if (!isSilent) setMatches([]);
+      } finally {
+        if (!isSilent) setLoading(false);
       }
-    } catch (err: any) {
-      console.error(err);
-      setMatches([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [tatamiNumber, tournamentId]
+  );
 
   useEffect(() => {
-    loadMatches();
-  }, [tatamiNumber, tournamentId]);
+    // 1. Carga inicial
+    loadMatches(false);
+
+    // 2. Suscripción en tiempo real a Supabase (eventos en tabla matches)
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`tatami-queue-view-${tatamiNumber}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'matches',
+          filter: `tatami_number=eq.${tatamiNumber}`,
+        },
+        () => {
+          loadMatches(true);
+        }
+      )
+      .subscribe();
+
+    // 3. Intervalo de sondeo (polling de respaldo cada 5s para alta resiliencia)
+    const pollTimer = setInterval(() => {
+      loadMatches(true);
+    }, 5000);
+
+    return () => {
+      channel.unsubscribe();
+      clearInterval(pollTimer);
+    };
+  }, [loadMatches, tatamiNumber]);
+
+  // Manejador para compactar y renumerar correlativos (1, 2, 3...)
+  const handleResequence = async () => {
+    if (!tournamentId) return;
+    setIsResequencing(true);
+    setResequenceMessage(null);
+    try {
+      const res = await resequenceTatamiMatchesAction(tournamentId, tatamiNumber);
+      if (res.success) {
+        setResequenceMessage('¡Correlativos renumerados con éxito!');
+        await loadMatches(false);
+        setTimeout(() => setResequenceMessage(null), 3500);
+      } else {
+        setResequenceMessage('Error al renumerar: ' + (res.error || ''));
+      }
+    } catch (err: any) {
+      setResequenceMessage('Error: ' + err.message);
+    } finally {
+      setIsResequencing(false);
+    }
+  };
 
   // Métricas de la cola del tatami
   const stats = useMemo(() => {
@@ -96,6 +153,11 @@ export function TatamiQueueView({
     const ongoing = matches.filter((m) => m.status === 'ONGOING').length;
     const finished = matches.filter((m) => m.status === 'FINISHED').length;
     return { total, scheduled, pending, ongoing, finished };
+  }, [matches]);
+
+  // Identificar el ID del primer combate que está listo para entrar al tatami
+  const firstScheduledId = useMemo(() => {
+    return matches.find((m) => m.status === 'SCHEDULED')?.id;
   }, [matches]);
 
   // Manejador: Llamar a Tatami (Redirigir al motor de arbitraje)
@@ -181,32 +243,63 @@ export function TatamiQueueView({
 
       {/* LISTA SECUENCIAL DE COMBATES EN COLA */}
       <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-        <div className="p-4 bg-slate-950/70 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <Swords className="w-5 h-5 text-amber-400" />
-            <span className="text-base font-bold text-white">
-              Secuencia Cronológica del Tatami #{tatamiNumber}
-            </span>
-          </div>
+        <div className="p-4 bg-slate-950/70 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center space-x-3">
+            <div className="flex items-center space-x-2">
+              <Swords className="w-5 h-5 text-amber-400" />
+              <span className="text-base font-bold text-white">
+                Secuencia Cronológica del Tatami #{tatamiNumber}
+              </span>
+            </div>
+            {/* Indicador de Sincronización en Tiempo Real */}
+            <div className="flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800/80 text-[10px] text-emerald-400 font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Tiempo Real</span>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {tournamentId && (
+              <button
+                type="button"
+                onClick={handleResequence}
+                disabled={isResequencing || loading || matches.length === 0}
+                className="text-xs font-bold text-amber-400 hover:text-amber-300 disabled:opacity-50 flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 transition shadow-sm"
+                title="Compactar y renumerar correlativos continuos (1, 2, 3...) sin huecos"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isResequencing ? 'animate-spin' : ''}`} />
+                <span>{isResequencing ? 'Renumerando...' : 'Renumerar (1, 2, 3...)'}</span>
+              </button>
+            )}
+
             <button
-              onClick={loadMatches}
+              type="button"
+              onClick={() => loadMatches(false)}
               disabled={loading}
-              className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
+              className="text-xs text-slate-400 hover:text-white flex items-center space-x-1 px-2.5 py-1.5 rounded-xl border border-slate-800 bg-slate-900/60 transition"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>Actualizar</span>
             </button>
+
             <Link
               href={`/scoreboard/tatami-${tatamiNumber}`}
               target="_blank"
-              className="text-xs font-bold text-slate-400 hover:text-white flex items-center space-x-1.5 transition"
+              className="text-xs font-bold text-slate-300 hover:text-white flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition"
             >
               <Tv className="w-4 h-4 text-emerald-400" />
-              <span>Abrir Marcador TV (Realtime)</span>
+              <span>Marcador TV</span>
             </Link>
           </div>
         </div>
+
+        {/* Notificación de Renumeración */}
+        {resequenceMessage && (
+          <div className="bg-amber-950/40 border-b border-amber-800/60 px-4 py-2 text-xs font-medium text-amber-300 flex items-center space-x-2 animate-fadeIn">
+            <Sparkles className="w-4 h-4 flex-shrink-0 text-amber-400" />
+            <span>{resequenceMessage}</span>
+          </div>
+        )}
 
         {matches.length === 0 ? (
           <div className="p-12 text-center space-y-3 bg-slate-950/40">
@@ -231,14 +324,25 @@ export function TatamiQueueView({
           </div>
         ) : (
           <div className="divide-y divide-slate-800">
-            {matches.map((match, idx) => {
-              const isNext = idx === 0 && match.status === 'SCHEDULED';
+            {matches.map((match) => {
+              const isNext = match.id === firstScheduledId;
+              const isSkipped =
+                match.status === 'SCHEDULED' &&
+                matches.some(
+                  (m) =>
+                    m.match_number > match.match_number &&
+                    (m.status === 'FINISHED' || m.status === 'ONGOING')
+                );
 
               return (
                 <div
                   key={match.id}
                   className={`p-4 transition flex flex-col md:flex-row md:items-center md:justify-between gap-4 ${
-                    isNext ? 'bg-amber-950/20' : 'hover:bg-slate-800/40'
+                    isNext
+                      ? 'bg-amber-950/25'
+                      : isSkipped
+                      ? 'bg-amber-950/10 border-l-4 border-l-amber-500'
+                      : 'hover:bg-slate-800/40'
                   }`}
                 >
                   {/* Número y Categoría */}
@@ -249,7 +353,7 @@ export function TatamiQueueView({
                     </div>
 
                     <div className="space-y-1">
-                      <div className="flex items-center space-x-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-sm font-bold text-white block">
                           {match.category_name}
                         </span>
@@ -257,6 +361,12 @@ export function TatamiQueueView({
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 flex items-center space-x-1">
                             <Sparkles className="w-3 h-3" />
                             <span>Siguiente Combate</span>
+                          </span>
+                        )}
+                        {isSkipped && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center space-x-1">
+                            <Clock className="w-3 h-3" />
+                            <span>Pendiente / Postergado</span>
                           </span>
                         )}
                       </div>

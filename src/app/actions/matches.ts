@@ -225,3 +225,28 @@ export async function finishMatchAndPropagateWinnerAction(
     };
   }
 }
+
+/**
+ * Actualiza el estado de un combate en Supabase (ej: 'ONGOING', 'PAUSED').
+ * Utilizado por la Mesa de Control para notificar inmediatamente a la cola y marcador.
+ */
+export async function updateMatchStatusAction(
+  matchId: string,
+  status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED'
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { error } = await supabase
+      .from('matches')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', matchId);
+
+    if (error) {
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+

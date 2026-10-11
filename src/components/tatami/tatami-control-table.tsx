@@ -32,7 +32,9 @@ import {
   getLocalDB,
   LocalMatch,
 } from '@/lib/offline/db';
-import { finishMatchAndPropagateWinnerAction } from '@/app/actions/matches';
+import { finishMatchAndPropagateWinnerAction, updateMatchStatusAction } from '@/app/actions/matches';
+import { getNextScheduledTatamiMatchAction } from '@/app/actions/brackets';
+import { isValidUuid } from '@/lib/utils/uuid';
 
 interface TatamiControlTableProps {
   initialMatch: LocalMatch;
@@ -175,115 +177,20 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       currentMatchNumber?: number,
       tournamentId?: string
     ): Promise<LocalMatch | null> => {
-      // 1. Intentar buscar en Supabase primero (fuente de verdad cloud)
+      // 1. Intentar buscar mediante Server Action (con privilegios de Service Role, sin bloqueos de RLS)
       try {
-        const supabase = createClient();
-        const baseSelect = `
-          id,
-          tournament_id,
-          category_id,
-          tatami_number,
-          match_number,
-          round,
-          status,
-          current_match_time_seconds,
-          category:categories (
-            name,
-            match_duration_seconds
-          ),
-          white_athlete:athletes!matches_white_athlete_id_fkey (
-            id,
-            first_name,
-            last_name,
-            club:clubs (
-              name
-            )
-          ),
-          blue_athlete:athletes!matches_blue_athlete_id_fkey (
-            id,
-            first_name,
-            last_name,
-            club:clubs (
-              name
-            )
-          )
-        `;
+        const res = await getNextScheduledTatamiMatchAction({
+          tatamiNumber: tatamiNum,
+          tournamentId,
+          currentMatchNumber,
+          currentMatchId: currentId,
+        });
 
-        let query = supabase
-          .from('matches')
-          .select(baseSelect)
-          .eq('tatami_number', tatamiNum)
-          .eq('status', 'SCHEDULED')
-          .neq('id', currentId);
-
-        if (tournamentId) {
-          query = query.eq('tournament_id', tournamentId);
-        }
-
-        // Buscar prioritariamente el siguiente combate correlativo en la cola
-        let matchedData: any = null;
-        if (currentMatchNumber !== undefined && currentMatchNumber !== null) {
-          const { data: nextSeqData } = await query
-            .gt('match_number', currentMatchNumber)
-            .order('match_number', { ascending: true })
-            .limit(1)
-            .maybeSingle();
-
-          if (nextSeqData) {
-            matchedData = nextSeqData;
-          }
-        }
-
-        // Si no hay posterior, buscar el de menor match_number en el torneo
-        if (!matchedData) {
-          const { data: lowestData } = await query
-            .order('match_number', { ascending: true })
-            .limit(1)
-            .maybeSingle();
-
-          if (lowestData) {
-            matchedData = lowestData;
-          }
-        }
-
-        if (matchedData) {
-          const rawData = matchedData as any;
-          const whiteAth = Array.isArray(rawData.white_athlete) ? rawData.white_athlete[0] : rawData.white_athlete;
-          const blueAth = Array.isArray(rawData.blue_athlete) ? rawData.blue_athlete[0] : rawData.blue_athlete;
-
-          const whiteName = whiteAth
-            ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
-            : rawData.white_athlete_name || 'Por definir';
-          const whiteClub = whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente');
-          const blueName = blueAth
-            ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
-            : rawData.blue_athlete_name || 'Por definir';
-          const blueClub = blueAth?.club?.name || (Array.isArray(blueAth?.club) ? blueAth.club[0]?.name : 'Independiente');
-
-          const nextLocal: LocalMatch = {
-            id: rawData.id,
-            tournament_id: rawData.tournament_id,
-            category_id: rawData.category_id,
-            category_name: rawData.category?.name || currentMatch.category_name || 'Categoría Oficial',
-            tatami_number: rawData.tatami_number,
-            match_number: rawData.match_number,
-            white_athlete_name: whiteName,
-            white_club_name: whiteClub,
-            blue_athlete_name: blueName,
-            blue_club_name: blueClub,
-            white_athlete_id: rawData.white_athlete_id || null,
-            blue_athlete_id: rawData.blue_athlete_id || null,
-            next_match_id: rawData.next_match_id || null,
-            next_match_slot: rawData.next_match_slot || null,
-            match_duration_seconds: rawData.category?.match_duration_seconds || currentMatch.match_duration_seconds || 240,
-            status: 'SCHEDULED',
-            current_time_seconds: 0,
-            updated_at: new Date().toISOString(),
-          };
-          return nextLocal;
+        if (res.success && res.match) {
+          return res.match as LocalMatch;
         }
       } catch (err) {
-        console.warn('[Queue] Error consultando Supabase, consultando IndexedDB:', err);
+        console.warn('[Queue] Error consultando Server Action, consultando IndexedDB:', err);
       }
 
       // 2. Fallback offline: Consultar cola local en IndexedDB
@@ -315,7 +222,7 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
 
       return null;
     },
-    [currentMatch.category_name, currentMatch.match_duration_seconds]
+    []
   );
 
   // Carga e inicialización del siguiente combate en la mesa
@@ -634,12 +541,22 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       dispatchEvent(next ? 'START_CLOCK' : 'STOP_CLOCK', null);
       if (next && matchStatus === 'SCHEDULED') {
         setMatchStatus('ONGOING');
+        if (isValidUuid(currentMatch.id)) {
+          updateMatchStatusAction(currentMatch.id, 'ONGOING').catch((err) =>
+            console.warn('[TatamiControlTable] Error actualizando status a ONGOING:', err)
+          );
+        }
       } else if (!next && matchStatus === 'ONGOING') {
         setMatchStatus('PAUSED');
+        if (isValidUuid(currentMatch.id)) {
+          updateMatchStatusAction(currentMatch.id, 'PAUSED').catch((err) =>
+            console.warn('[TatamiControlTable] Error actualizando status a PAUSED:', err)
+          );
+        }
       }
       return next;
     });
-  }, [dispatchEvent, matchStatus]);
+  }, [currentMatch.id, dispatchEvent, matchStatus]);
 
   // ============================================================================
   // CONTROL DE RETENCIÓN: OSAEKOMI SWAP Y GESTIÓN DE SESIÓN
