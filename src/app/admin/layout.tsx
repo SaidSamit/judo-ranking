@@ -20,14 +20,18 @@ export default async function AdminLayout({
     redirect('/');
   }
   return (
-    <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-amber-500 selection:text-slate-950">
+    <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-amber-500 selection:text-slate-950 print:bg-white print:text-black">
       {/* BARRA LATERAL PROFESIONAL */}
-      <AdminSidebar />
+      <div className="print:hidden">
+        <AdminSidebar />
+      </div>
 
       {/* ÁREA DE CONTENIDO PRINCIPAL */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <AdminTopHeader />
-        <main className="flex-1 overflow-y-auto">
+      <div className="flex-1 flex flex-col min-w-0 print:p-0 print:m-0">
+        <div className="print:hidden">
+          <AdminTopHeader />
+        </div>
+        <main className="flex-1 overflow-y-auto print:overflow-visible">
           {children}
         </main>
       </div>

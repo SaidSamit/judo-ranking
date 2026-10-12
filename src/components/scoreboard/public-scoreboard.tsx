@@ -244,7 +244,7 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
           )}
 
           <div className="pb-2 text-center text-xs text-slate-600 font-mono">
-            Circuito Federado • Reglas IJF
+            Circuito Federado • Reglas Oficiales
           </div>
         </section>
 

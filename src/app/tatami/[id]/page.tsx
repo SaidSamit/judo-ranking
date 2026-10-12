@@ -7,8 +7,11 @@ import { TatamiControlTable } from '@/components/tatami/tatami-control-table';
 import { TatamiStandbyView } from '@/components/tatami/tatami-standby-view';
 import { LocalMatch } from '@/lib/offline/db';
 import { isValidUuid } from '@/lib/utils/uuid';
-import { getMatchByIdAction, getTatamiQueueMatchesAction } from '@/app/actions/brackets';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { getMatchByIdAction } from '@/app/actions/matches';
+import { getTatamiQueueMatchesAction } from '@/app/actions/brackets';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
 interface TatamiPageProps {
   params: Promise<{ id: string }>;
@@ -16,6 +19,43 @@ interface TatamiPageProps {
 
 export default async function TatamiPage({ params }: TatamiPageProps) {
   const { id } = await params;
+
+  // 0. Si el identificador es 'demo', servir la mesa de control de demostración
+  // completamente aislada (sin combates del campeonato asignados)
+  if (id.toLowerCase() === 'demo') {
+    const demoMatch: LocalMatch = {
+      id: 'demo-match',
+      tournament_id: 'demo',
+      category_id: 'demo-category',
+      category_name: 'Mesa de Demostración (Modo Práctica)',
+      tatami_number: 0,
+      match_number: 0,
+      white_athlete_name: 'Judoka Blanco (Demo)',
+      white_club_name: 'Club Shiai',
+      blue_athlete_name: 'Judoka Azul (Demo)',
+      blue_club_name: 'Club Nippon',
+      white_athlete_id: null,
+      blue_athlete_id: null,
+      next_match_id: null,
+      next_match_slot: null,
+      match_duration_seconds: 240,
+      status: 'SCHEDULED',
+      current_time_seconds: 0,
+      updated_at: new Date().toISOString(),
+    };
+
+    return <TatamiControlTable initialMatch={demoMatch} isDemoMode={true} />;
+  }
+
+  // 1. Verificación de Seguridad: Sólo Directores autenticados o Estaciones con PIN válido
+  const cookieStore = await cookies();
+  const adminRole = cookieStore.get('judo_admin_role')?.value;
+  const stationToken = cookieStore.get('station_token')?.value;
+
+  if (!adminRole && !stationToken) {
+    redirect('/?error=station_login_required');
+  }
+
   const tatamiNum = parseInt(id.replace(/\D/g, '') || '1', 10);
 
   let loadedMatch: LocalMatch | null = null;

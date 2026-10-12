@@ -174,6 +174,10 @@ export async function logoutAdminAction(): Promise<void> {
 function normalizeStationIdentifier(raw: string): { slug: string; candidateNumber: number } {
   const clean = raw.trim().toLowerCase();
 
+  if (clean === 'demo' || clean.startsWith('demo')) {
+    return { slug: 'demo', candidateNumber: 0 };
+  }
+
   // Extraer el primer número presente en la cadena
   const digitsMatch = clean.match(/\d+/);
   const number = digitsMatch ? parseInt(digitsMatch[0], 10) : 1;
@@ -198,7 +202,7 @@ export async function loginTatamiAction(
   if (!cleanId) {
     return {
       success: false,
-      message: 'Por favor ingresa el identificador de la estación (ej: tatami-1).',
+      message: 'Por favor ingresa el identificador de la estación (ej: tatami-1 o demo).',
     };
   }
 
@@ -210,6 +214,32 @@ export async function loginTatamiAction(
   }
 
   const { slug, candidateNumber } = normalizeStationIdentifier(cleanId);
+
+  // MODO DEMO: Estación aislada para exhibición sin alterar campeonatos
+  if (slug === 'demo' || cleanId.toLowerCase() === 'demo') {
+    if (cleanPin === '1234') {
+      const cookieStore = await cookies();
+      cookieStore.set('tatami_session_slug', 'demo', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60,
+      });
+
+      return {
+        success: true,
+        tatamiNumber: 0,
+        redirectTo: '/tatami/demo',
+        message: 'Acceso concedido a Mesa de Control de Demostración.',
+      };
+    } else {
+      return {
+        success: false,
+        message: 'PIN incorrecto para la mesa de demostración. Usa la clave 1234.',
+      };
+    }
+  }
 
   try {
     const supabase = createAdminClient();

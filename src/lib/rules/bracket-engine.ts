@@ -25,6 +25,80 @@
 
 export type BracketType = 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION';
 
+/**
+ * Traduce y formatea códigos técnicos de rondas (QF, SF, FINAL, RR_R1, BEST_OF_3_M1, etc.)
+ * a nombres oficiales en español para la mesa de control, monitor de tatamis y colas de combate.
+ */
+export function formatRoundName(round: string | null | undefined): string {
+  if (!round) return 'Ronda Oficial';
+
+  const r = round.trim().toUpperCase();
+
+  // Si ya tiene un nombre descriptivo completo, retornarlo
+  if (round.startsWith('Al Mejor de 3') || round.startsWith('Todos contra Todos')) {
+    return round;
+  }
+
+  // Finales y Rondas Eliminatorias
+  if (r === 'FINAL' || (r.startsWith('FINAL') && !r.includes('_'))) return 'Final';
+  if (r === 'SF' || r === 'SEMIFINAL' || r === 'SEMI') return 'Semifinal';
+  if (r === 'QF' || r === 'CUARTOS') return 'Cuartos de Final';
+  if (r === 'R16' || r === 'OCTAVOS') return 'Octavos de Final';
+  if (r === 'R32' || r === 'DIECISEISAVOS') return 'Dieciseisavos de Final';
+  if (r === 'R64') return 'Treintaidosavos de Final';
+  if (r === 'BRONZE' || r === 'BRONCE') return 'Disputa por Bronce';
+  if (r === 'BRONZE_1' || r === 'BRONCE_1') return 'Disputa por Bronce A';
+  if (r === 'BRONZE_2' || r === 'BRONCE_2') return 'Disputa por Bronce B';
+  if (r === 'REPECHAGE' || r === 'REPECHAJE') return 'Repechaje';
+  if (r === 'REPECHAGE_1' || r === 'REPECHAJE_1') return 'Repechaje 1';
+  if (r === 'REPECHAGE_2' || r === 'REPECHAJE_2') return 'Repechaje 2';
+
+  // Mejor de 3
+  if (r === 'BEST_OF_3_M1') return 'Al Mejor de 3 - Combate 1';
+  if (r === 'BEST_OF_3_M2') return 'Al Mejor de 3 - Combate 2';
+  if (r === 'BEST_OF_3_M3_DECIDER' || r === 'BEST_OF_3_M3') return 'Al Mejor de 3 - Combate 3 (Desempate)';
+  if (r.startsWith('BEST_OF_3')) {
+    const matchM = r.match(/M(\d+)/);
+    if (matchM) {
+      return `Al Mejor de 3 - Combate ${matchM[1]}${r.includes('DECIDER') ? ' (Desempate)' : ''}`;
+    }
+    return 'Al Mejor de 3';
+  }
+
+  // Round Robin
+  const rrMatch = r.match(/^RR_R(\d+)(?:_M(\d+))?$/);
+  if (rrMatch) {
+    const roundNum = rrMatch[1];
+    const matchNum = rrMatch[2] ? ` - Combate ${rrMatch[2]}` : '';
+    return `Todos contra Todos - Ronda ${roundNum}${matchNum}`;
+  }
+  if (r.startsWith('RR_R')) {
+    return r.replace('RR_R', 'Todos contra Todos - Ronda ');
+  }
+
+  // Rondas compuestas: QF_M1, SF_M2, etc.
+  if (r.startsWith('QF_M') || r.startsWith('QF-') || r.startsWith('QF ')) {
+    const num = r.replace(/[^0-9]/g, '');
+    return num ? `Cuartos de Final - Combate ${num}` : 'Cuartos de Final';
+  }
+  if (r.startsWith('SF_M') || r.startsWith('SF-') || r.startsWith('SF ')) {
+    const num = r.replace(/[^0-9]/g, '');
+    return num ? `Semifinal - Combate ${num}` : 'Semifinal';
+  }
+
+  // Limpieza genérica si contiene guiones bajos
+  if (round.includes('_')) {
+    return round
+      .replace(/_/g, ' ')
+      .replace(/\bRR\b/g, 'Todos contra Todos')
+      .replace(/\bQF\b/g, 'Cuartos de Final')
+      .replace(/\bSF\b/g, 'Semifinal')
+      .replace(/\bFINAL\b/g, 'Final');
+  }
+
+  return round;
+}
+
 export interface Competitor {
   id: string; // UUID del atleta o registration_id
   name: string; // Nombre completo (ej: "Carlos Muñoz")
@@ -117,7 +191,7 @@ function generateBestOf3(
     tatami_number: opts.tatami_number,
     match_number: startNum,
     round: 'BEST_OF_3_M1',
-    round_name: 'Mejor de 3 - Combate 1',
+    round_name: 'Al Mejor de 3 - Combate 1',
     white_athlete_id: c1.id,
     blue_athlete_id: c2.id,
     white_athlete_name: c1.name,
@@ -141,7 +215,7 @@ function generateBestOf3(
     tatami_number: opts.tatami_number,
     match_number: startNum + 1,
     round: 'BEST_OF_3_M2',
-    round_name: 'Mejor de 3 - Combate 2',
+    round_name: 'Al Mejor de 3 - Combate 2',
     white_athlete_id: c2.id,
     blue_athlete_id: c1.id,
     white_athlete_name: c2.name,
@@ -165,7 +239,7 @@ function generateBestOf3(
     tatami_number: opts.tatami_number,
     match_number: startNum + 2,
     round: 'BEST_OF_3_M3_DECIDER',
-    round_name: 'Mejor de 3 - Combate 3 (Desempate)',
+    round_name: 'Al Mejor de 3 - Combate 3 (Desempate)',
     white_athlete_id: c1.id,
     blue_athlete_id: c2.id,
     white_athlete_name: c1.name,
@@ -253,7 +327,7 @@ function generateRoundRobin(
         tatami_number: opts.tatami_number,
         match_number: currentMatchNum++,
         round: `RR_R${roundNumber}`,
-        round_name: `Round Robin - Ronda ${roundNumber}`,
+        round_name: `Todos contra Todos - Ronda ${roundNumber}`,
         white_athlete_id: white.id,
         blue_athlete_id: blue.id,
         white_athlete_name: white.name,
@@ -403,7 +477,7 @@ function generateSingleElimination(
         tatami_number: opts.tatami_number,
         match_number: currentMatchNum++,
         round: code,
-        round_name: `${name} - Llave #${m + 1}`,
+        round_name: `${name} - Combate #${m + 1}`,
         white_athlete_id: slotA.athlete ? slotA.athlete.id : null,
         blue_athlete_id: slotB.athlete ? slotB.athlete.id : null,
         white_athlete_name: slotA.athlete ? slotA.athlete.name : 'Por definir',
@@ -446,6 +520,135 @@ function generateSingleElimination(
     currentRoundSlots = nextRoundSlots;
   }
 
+  // ============================================================================
+  // REGLAMENTO OLÍMPICO IJF: REPECHAJE Y DOBLE BRONCE (PARA N >= 6)
+  // ============================================================================
+  // En llaves de 6 o más competidores:
+  // - Los perdedores de Cuartos de Final (QF) disputan el Repechaje:
+  //   * REPECHAGE_1: Perdedor QF 1 vs Perdedor QF 2
+  //   * REPECHAGE_2: Perdedor QF 3 vs Perdedor QF 4
+  // - Los perdedores de Semifinales (SF) cruzan de rama para evitar revanchas inmediatas:
+  //   * BRONZE_1: Perdedor SF 2 (Rama B) vs Ganador REPECHAGE_1 (Rama A)
+  //   * BRONZE_2: Perdedor SF 1 (Rama A) vs Ganador REPECHAGE_2 (Rama B)
+  // De esta forma se proclaman DOS terceros lugares (Doble Bronce) sin repetir cruces previos.
+  if (n >= 6) {
+    const qfMatches = matchesByRound.find(
+      (roundList) => roundList.length > 0 && roundList[0].round === 'QF'
+    );
+    const sfMatches = matchesByRound.find(
+      (roundList) => roundList.length > 0 && roundList[0].round === 'SF'
+    );
+
+    if (qfMatches && qfMatches.length >= 2) {
+      // 1. REPECHAJE 1: Entre perdedores de QF 1 y QF 2 (Rama A)
+      const rep1Id = generateUUID();
+      const rep1Match: GeneratedMatch = {
+        id: rep1Id,
+        organization_id: opts.organization_id,
+        tournament_id: opts.tournament_id,
+        category_id: opts.category_id,
+        tatami_number: opts.tatami_number,
+        match_number: currentMatchNum++,
+        round: 'REPECHAGE_1',
+        round_name: 'Repechaje 1 (Cuadro Superior)',
+        white_athlete_id: null,
+        blue_athlete_id: null,
+        white_athlete_name: 'Perdedor Cuartos #1',
+        blue_athlete_name: 'Perdedor Cuartos #2',
+        winner_id: null,
+        status: 'PENDING',
+        white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        current_match_time_seconds: 0,
+        is_golden_score: false,
+      };
+
+      // 2. REPECHAJE 2: Entre perdedores de QF 3 y QF 4 (Rama B - si existen)
+      const rep2Id = generateUUID();
+      const rep2Match: GeneratedMatch = {
+        id: rep2Id,
+        organization_id: opts.organization_id,
+        tournament_id: opts.tournament_id,
+        category_id: opts.category_id,
+        tatami_number: opts.tatami_number,
+        match_number: currentMatchNum++,
+        round: 'REPECHAGE_2',
+        round_name: 'Repechaje 2 (Cuadro Inferior)',
+        white_athlete_id: null,
+        blue_athlete_id: null,
+        white_athlete_name: qfMatches.length >= 3 ? 'Perdedor Cuartos #3' : 'Perdedor Cuartos',
+        blue_athlete_name: qfMatches.length >= 4 ? 'Perdedor Cuartos #4' : 'Por definir',
+        winner_id: null,
+        status: 'PENDING',
+        white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        current_match_time_seconds: 0,
+        is_golden_score: false,
+      };
+
+      // 3. COMBATE POR BRONCE 1: Perdedor SF 2 vs Ganador REPECHAGE 1 (Cruce A <-> B)
+      const bronze1Id = generateUUID();
+      const bronze1Match: GeneratedMatch = {
+        id: bronze1Id,
+        organization_id: opts.organization_id,
+        tournament_id: opts.tournament_id,
+        category_id: opts.category_id,
+        tatami_number: opts.tatami_number,
+        match_number: currentMatchNum++,
+        round: 'BRONZE_1',
+        round_name: 'Disputa por Bronce A (3° Lugar)',
+        white_athlete_id: null,
+        blue_athlete_id: null,
+        white_athlete_name: 'Perdedor Semifinal #2',
+        blue_athlete_name: 'Ganador Repechaje 1',
+        winner_id: null,
+        status: 'PENDING',
+        white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        current_match_time_seconds: 0,
+        is_golden_score: false,
+      };
+
+      // 4. COMBATE POR BRONCE 2: Perdedor SF 1 vs Ganador REPECHAGE 2 (Cruce B <-> A)
+      const bronze2Id = generateUUID();
+      const bronze2Match: GeneratedMatch = {
+        id: bronze2Id,
+        organization_id: opts.organization_id,
+        tournament_id: opts.tournament_id,
+        category_id: opts.category_id,
+        tatami_number: opts.tatami_number,
+        match_number: currentMatchNum++,
+        round: 'BRONZE_2',
+        round_name: 'Disputa por Bronce B (3° Lugar)',
+        white_athlete_id: null,
+        blue_athlete_id: null,
+        white_athlete_name: 'Perdedor Semifinal #1',
+        blue_athlete_name: 'Ganador Repechaje 2',
+        winner_id: null,
+        status: 'PENDING',
+        white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+        current_match_time_seconds: 0,
+        is_golden_score: false,
+      };
+
+      // Enlazar ganador de repechaje hacia el bronce respectivo
+      rep1Match.next_match_id = bronze1Id;
+      rep1Match.next_match_slot = 'BLUE';
+
+      rep2Match.next_match_id = bronze2Id;
+      rep2Match.next_match_slot = 'BLUE';
+
+      allMatchesMap.set(rep1Id, rep1Match);
+      allMatchesMap.set(rep2Id, rep2Match);
+      allMatchesMap.set(bronze1Id, bronze1Match);
+      allMatchesMap.set(bronze2Id, bronze2Match);
+
+      matchesByRound.push([rep1Match, rep2Match]);
+      matchesByRound.push([bronze1Match, bronze2Match]);
+    }
+  }
+
   // Aplanar todos los combates reales en orden cronológico de cola
   const flattenedMatches = matchesByRound.flat();
 
@@ -455,7 +658,7 @@ function generateSingleElimination(
     total_matches: flattenedMatches.length,
     matches: flattenedMatches,
     summary: {
-      description: `Eliminación Simple: árbol de tamaño ${p} con ${byesCount} Byes calculados hacia la Final.`,
+      description: `Eliminación Simple IJF (${p} slots, ${byesCount} Byes) con Repechaje y Doble Bronce.`,
       rounds_count: totalRounds,
       byes_count: byesCount,
       power_of_two: p,
@@ -538,8 +741,10 @@ export function sequenceTatamiMatches(
     if (r.startsWith('RR_R1') || r.startsWith('R64') || r.startsWith('R32')) return 1;
     if (r.startsWith('RR_R2') || r.startsWith('R16')) return 2;
     if (r.startsWith('RR_R3') || r.startsWith('QF')) return 3;
-    if (r.startsWith('RR_R4') || r.startsWith('SF')) return 4;
-    if (r.startsWith('RR_R5') || r.startsWith('FINAL') || r.includes('M3_DECIDER')) return 5;
+    if (r.startsWith('REPECHAGE')) return 4;
+    if (r.startsWith('RR_R4') || r.startsWith('SF')) return 5;
+    if (r.startsWith('BRONZE')) return 6;
+    if (r.startsWith('RR_R5') || r.startsWith('FINAL') || r.includes('M3_DECIDER')) return 7;
     return 3;
   }
 

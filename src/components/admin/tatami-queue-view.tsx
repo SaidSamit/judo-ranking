@@ -21,6 +21,7 @@ import {
   ArrowLeft,
   RefreshCw,
   Radio,
+  Layers,
 } from 'lucide-react';
 import { getTatamiQueueMatchesAction, resequenceTatamiMatchesAction } from '@/app/actions/brackets';
 import { createClient } from '@/lib/supabase/client';
@@ -193,8 +194,19 @@ export function TatamiQueueView({
           </p>
         </div>
 
-        {/* Selector Dinámico de Tatamis según tatamiCount del campeonato */}
+        {/* Selector Dinámico de Tatamis y Acceso a Vista en Cascada */}
         <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-xl p-1 text-xs font-bold overflow-x-auto">
+          <Link
+            href="/admin/tatamis"
+            className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 transition flex items-center space-x-1"
+            title="Ver todos los tatamis uno al lado del otro en paralelo"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Monitor Multi-Tatami</span>
+          </Link>
+
+          <div className="h-4 w-px bg-slate-800 mx-1" />
+
           {Array.from({ length: tatamiCount }, (_, i) => i + 1).map((num) => (
             <Link
               key={num}

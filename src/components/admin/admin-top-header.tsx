@@ -75,18 +75,6 @@ export function AdminTopHeader() {
           </div>
         )}
 
-        {/* ACCESO RÁPIDO A PANTALLA TV */}
-        <Link
-          href="/scoreboard/tatami-1"
-          target="_blank"
-          className="flex items-center space-x-1.5 px-3 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition font-sans font-bold text-xs"
-          title="Abrir Marcador de TV en pestaña externa"
-        >
-          <Tv className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="hidden md:inline">Ver TV Realtime</span>
-          <ExternalLink className="w-3 h-3 text-slate-400" />
-        </Link>
-
         {/* CERRAR SESIÓN */}
         <button
           onClick={() => logoutAdminAction()}

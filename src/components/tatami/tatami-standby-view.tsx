@@ -182,7 +182,7 @@ export function TatamiStandbyView({
 
       {/* PIE DE PÁGINA */}
       <footer className="text-center text-slate-600 text-[11px] font-mono border-t border-slate-900 pt-4">
-        Sistema Oficial B2B de Gestión de Torneos de Judo • Federación y Reglas IJF
+        Sistema Oficial B2B de Gestión de Torneos de Judo • Federación y Reglamento Oficial
       </footer>
     </div>
   );

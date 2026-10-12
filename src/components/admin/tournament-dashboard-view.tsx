@@ -18,6 +18,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
   Trophy,
   Users,
@@ -49,11 +50,13 @@ import {
   PlayCircle,
   Plus,
   X,
+  Layers,
 } from 'lucide-react';
 import { TournamentItem, setActiveTournamentAction, injectAthletesToTournamentAction } from '@/app/actions/tournaments';
 import {
   getTournamentRegistrationsAction,
   RegisteredAthleteSummary,
+  reassignAthleteCategoryAction,
 } from '@/app/actions/registrations';
 import {
   getWeighInAthletesAction,
@@ -68,6 +71,8 @@ import {
   CategoryBracketStatus,
   reassignCategoryTatamiAction,
   createTournamentCategoryAction,
+  getTournamentPodiumsAction,
+  CategoryPodiumResult,
 } from '@/app/actions/brackets';
 import {
   getTournamentCredentialsAction,
@@ -75,22 +80,39 @@ import {
 } from '@/app/actions/tournament-builder';
 import { BracketViewer } from '@/components/admin/bracket-viewer';
 import { RosterUpload } from '@/components/admin/roster-upload';
+import { MultiTatamiMonitorView } from '@/components/admin/multi-tatami-monitor-view';
 import { BracketResult } from '@/lib/rules/bracket-engine';
 import {
   isWeightValidForCategory,
   getSuggestedUpperCategory,
   parseWeightLimitFromCategory,
+  getWeightsForAgeDivision,
+  getRecommendedDuration,
+  JUDO_AGE_DIVISIONS,
 } from '@/lib/rules/judo-categories';
 
-type DashboardTab = 'roster' | 'weigh_in' | 'brackets' | 'credentials';
+type DashboardTab = 'roster' | 'weigh_in' | 'brackets' | 'credentials' | 'tatamis' | 'results';
 
 interface TournamentDashboardViewProps {
   initialTournament: TournamentItem;
 }
 
 export function TournamentDashboardView({ initialTournament }: TournamentDashboardViewProps) {
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+
   const [tournament, setTournament] = useState<TournamentItem>(initialTournament);
-  const [activeTab, setActiveTab] = useState<DashboardTab>('roster');
+  const [activeTab, setActiveTab] = useState<DashboardTab>(
+    requestedTab === 'tatamis' || requestedTab === 'monitor'
+      ? 'tatamis'
+      : requestedTab === 'weigh_in'
+      ? 'weigh_in'
+      : requestedTab === 'brackets'
+      ? 'brackets'
+      : requestedTab === 'credentials'
+      ? 'credentials'
+      : 'roster'
+  );
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(
     null
   );
@@ -137,6 +159,17 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const [loadingCredentials, setLoadingCredentials] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
+
+  // ==========================================================================
+  // ESTADOS DE PESTAÑA 6: RESULTADOS Y PODIO
+  // ==========================================================================
+  const [podiumResults, setPodiumResults] = useState<CategoryPodiumResult[]>([]);
+  const [loadingPodiums, setLoadingPodiums] = useState(false);
+
+  // Estado para modal rápido de reasignar judoka a otra categoría
+  const [reassigningAthlete, setReassigningAthlete] = useState<RegisteredAthleteSummary | null>(null);
+  const [reassignTargetCatId, setReassignTargetCatId] = useState<string>('');
+  const [isSubmittingReassign, setIsSubmittingReassign] = useState(false);
 
   // ==========================================================================
   // CARGA DE DATOS AISLADOS POR TORNEO
@@ -254,13 +287,54 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   }, [tournament.id]);
 
+  // 5. Cargar resultados y podios oficiales del torneo
+  const loadPodiums = useCallback(async () => {
+    setLoadingPodiums(true);
+    try {
+      const res = await getTournamentPodiumsAction(tournament.id);
+      if (res.success) {
+        setPodiumResults(res.results);
+      }
+    } catch (err: any) {
+      console.error('Error cargando podio del torneo:', err);
+    } finally {
+      setLoadingPodiums(false);
+    }
+  }, [tournament.id]);
+
+  // Manejador para reasignar a un judoka confirmado a otra categoría
+  const handleReassignAthleteCategory = async () => {
+    if (!reassigningAthlete || !reassignTargetCatId) return;
+    setIsSubmittingReassign(true);
+    try {
+      const res = await reassignAthleteCategoryAction({
+        registrationId: reassigningAthlete.id,
+        targetCategoryId: reassignTargetCatId,
+        tournamentId: tournament.id,
+      });
+
+      if (res.success) {
+        setFeedback({ type: 'success', text: res.message });
+        setReassigningAthlete(null);
+        await Promise.all([loadRoster(), loadWeighIn(), loadBrackets()]);
+      } else {
+        setFeedback({ type: 'error', text: res.message });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error reasignando categoría.' });
+    } finally {
+      setIsSubmittingReassign(false);
+    }
+  };
+
   // Disparar carga según la pestaña activa
   useEffect(() => {
     if (activeTab === 'roster') loadRoster();
     if (activeTab === 'weigh_in') loadWeighIn();
     if (activeTab === 'brackets') loadBrackets();
     if (activeTab === 'credentials') loadCredentials();
-  }, [activeTab, loadRoster, loadWeighIn, loadBrackets, loadCredentials]);
+    if (activeTab === 'results') loadPodiums();
+  }, [activeTab, loadRoster, loadWeighIn, loadBrackets, loadCredentials, loadPodiums]);
 
   // Carga inicial de conteos
   useEffect(() => {
@@ -599,7 +673,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const activeCategory = categories.find((c) => c.id === selectedCategoryId) || categories[0];
 
   return (
-    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6">
+    <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6 print:p-0 print:m-0 print:max-w-none">
+      <div className="print:hidden space-y-6">
       {/* ==================================================================== */}
       {/* ENCABEZADO MAESTRO AISLADO DEL CAMPEONATO */}
       {/* ==================================================================== */}
@@ -719,7 +794,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             }`}
           >
             <Users className="w-4 h-4" />
-            <span>1. Nómina & Inscripciones ({registeredAthletes.length})</span>
+            <span>Inscripciones ({registeredAthletes.length})</span>
           </button>
 
           <button
@@ -732,7 +807,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             }`}
           >
             <Scale className="w-4 h-4" />
-            <span>2. Estación de Pesaje</span>
+            <span>Estación de Pesaje</span>
           </button>
 
           <button
@@ -745,7 +820,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             }`}
           >
             <Trophy className="w-4 h-4" />
-            <span>3. Llaves & Sorteo</span>
+            <span>Sorteo</span>
           </button>
 
           <button
@@ -758,7 +833,33 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             }`}
           >
             <KeyRound className="w-4 h-4" />
-            <span>4. Tatamis & Credenciales PIN</span>
+            <span>Tatamis y Credenciales</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('tatamis')}
+            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
+              activeTab === 'tatamis'
+                ? 'bg-amber-500 text-slate-950 shadow-md'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span>Monitor Multi-Tatami</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('results')}
+            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
+              activeTab === 'results'
+                ? 'bg-amber-500 text-slate-950 shadow-md'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <Trophy className="w-4 h-4 text-amber-400" />
+            <span>Resultados y Podio</span>
           </button>
         </nav>
       </header>
@@ -842,13 +943,14 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-950 text-slate-400 font-bold border-b border-slate-800">
                     <tr>
-                      <th className="p-3">RUT / DNI</th>
+                      <th className="p-3">RUT</th>
                       <th className="p-3">Nombre Completo</th>
                       <th className="p-3">Club</th>
                       <th className="p-3">Año / Sexo</th>
                       <th className="p-3">Categoría Oficial</th>
                       <th className="p-3 text-center">Estado Pesaje</th>
                       <th className="p-3 text-right">Peso Real</th>
+                      <th className="p-3 text-right">Acción</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-medium">
@@ -895,6 +997,19 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                           <td className="p-3 text-right font-mono font-bold">
                             {ath.actual_weight ? `${ath.actual_weight} kg` : '-'}
                           </td>
+                          <td className="p-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReassigningAthlete(ath);
+                                setReassignTargetCatId(ath.category_id || (categories[0]?.id || ''));
+                              }}
+                              className="px-2 py-1 rounded bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 text-[11px] font-bold transition"
+                              title="Cambiar o reasignar categoría"
+                            >
+                              Cambiar Categoría
+                            </button>
+                          </td>
                         </tr>
                       ))}
                   </tbody>
@@ -907,9 +1022,11 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           <div className="pt-2">
             <RosterUpload
               tournamentId={tournament.id}
+              tournamentCategories={categories}
               onRegistrationsConfirmed={() => {
                 loadRoster();
                 loadWeighIn();
+                loadBrackets();
               }}
             />
           </div>
@@ -992,7 +1109,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                     <tr>
                       <th className="p-3">Atleta</th>
                       <th className="p-3">Categoría Asignada</th>
-                      <th className="p-3">Límite IJF</th>
+                      <th className="p-3">Límite Oficial</th>
                       <th className="p-3 text-center">Peso Real (kg)</th>
                       <th className="p-3 text-center">Estado</th>
                       <th className="p-3 text-right">Acción</th>
@@ -1269,7 +1386,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                         ? 'Todos contra Todos (Round Robin Berger)'
                         : activeCategory.bracket_type === 'BEST_OF_3'
                         ? 'Al Mejor de 3'
-                        : 'Eliminación Simple IJF'}
+                        : 'Eliminación Simple'}
                     </strong>
                   </p>
                 </div>
@@ -1321,7 +1438,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                       : 'Presiona "Generar Llave" para estructurar los cruces oficiales de esta categoría.'}
                   </p>
                   <p className="text-xs text-slate-500 max-w-md mx-auto">
-                    El motor matemático respetará las reglas oficiales IJF: si hay 2 competidores se
+                    El motor matemático respetará las reglas oficiales: si hay 2 competidores se
                     disputará al Mejor de 3, entre 3 y 5 se generará Round Robin (Berger), y para 6 o más
                     se dibujará el árbol de eliminación directa.
                   </p>
@@ -1424,40 +1541,275 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   </div>
 
                   {/* ACCESOS DIRECTOS DEL TATAMI */}
-                  <div className="pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5 text-center text-[11px]">
+                  <div className="pt-3 border-t border-slate-800/80 grid grid-cols-2 gap-2 text-center text-[11px]">
                     <Link
                       href={`/tatami/${cred.tatami_number}`}
                       target="_blank"
-                      className="py-1.5 px-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white font-bold border border-slate-800 flex items-center justify-center space-x-1 transition"
+                      className="py-1.5 px-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white font-bold border border-slate-800 flex items-center justify-center space-x-1.5 transition"
                       title="Abrir Mesa de Control y Arbitraje"
                     >
-                      <PlayCircle className="w-3 h-3 text-emerald-400" />
+                      <PlayCircle className="w-3.5 h-3.5 text-emerald-400" />
                       <span>Mesa</span>
                     </Link>
 
                     <Link
                       href={`/scoreboard/tatami-${cred.tatami_number}`}
                       target="_blank"
-                      className="py-1.5 px-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-purple-400 hover:text-purple-300 font-bold border border-slate-800 flex items-center justify-center space-x-1 transition"
+                      className="py-1.5 px-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-purple-400 hover:text-purple-300 font-bold border border-slate-800 flex items-center justify-center space-x-1.5 transition"
                       title="Abrir Marcador TV en tiempo real"
                     >
-                      <Tv className="w-3 h-3 text-purple-400" />
+                      <Tv className="w-3.5 h-3.5 text-purple-400" />
                       <span>TV</span>
-                    </Link>
-
-                    <Link
-                      href={`/admin/tatami/${cred.tatami_number}`}
-                      className="py-1.5 px-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 font-bold border border-amber-500/30 flex items-center justify-center space-x-1 transition"
-                      title="Ver Cola de Combates programados"
-                    >
-                      <Swords className="w-3 h-3" />
-                      <span>Cola</span>
                     </Link>
                   </div>
                 </div>
               ))}
             </div>
           </section>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* PESTAÑA 5: MONITOR MULTI-TATAMI EN CASCADA                           */}
+      {/* ==================================================================== */}
+      {activeTab === 'tatamis' && (
+        <div className="space-y-4">
+          <MultiTatamiMonitorView
+            initialTournamentId={tournament.id}
+            initialTournamentName={tournament.name}
+          />
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* PESTAÑA 6: RESULTADOS Y PODIO OFICIAL                                */}
+      {/* ==================================================================== */}
+      {activeTab === 'results' && (
+        <div className="space-y-6">
+          <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-lg font-black text-white flex items-center space-x-2">
+                  <Trophy className="w-5 h-5 text-amber-400" />
+                  <span>Resultados Oficiales y Podios - {tournament.name}</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Cuadro de honor con 1° (Oro), 2° (Plata), 3° (Doble Bronce olímpico), 5° y 7° lugar por categoría.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={loadPodiums}
+                disabled={loadingPodiums}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition flex items-center space-x-1.5 self-start sm:self-auto"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingPodiums ? 'animate-spin' : ''}`} />
+                <span>Actualizar Podios</span>
+              </button>
+            </div>
+
+            {podiumResults.length === 0 ? (
+              <div className="p-12 text-center text-slate-500 space-y-2">
+                <Trophy className="w-10 h-10 mx-auto text-slate-600" />
+                <p className="text-sm font-bold text-slate-400">No hay categorías configuradas o combates disputados aún.</p>
+                <p className="text-xs">A medida que se definan los combates en la mesa de control, los resultados se reflejarán aquí automáticamente.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {podiumResults.map((pr) => (
+                  <div
+                    key={pr.categoryId}
+                    className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-md"
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
+                      <div>
+                        <h3 className="text-base font-black text-white">{pr.categoryName}</h3>
+                        <span className="text-xs text-slate-400">
+                          {pr.ageGroup} • {pr.gender === 'M' ? 'Masculino' : pr.gender === 'F' ? 'Femenino' : 'Mixto'}
+                        </span>
+                      </div>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                          pr.isFinished
+                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                            : 'bg-amber-950 text-amber-400 border border-amber-800'
+                        }`}
+                      >
+                        {pr.isFinished ? 'Concluida' : `${pr.finishedMatches}/${pr.totalMatches} Combates`}
+                      </span>
+                    </div>
+
+                    {/* MEDALLERO OFICIAL */}
+                    <div className="space-y-2">
+                      {/* 1° Lugar (Oro) */}
+                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                        <div className="flex items-center space-x-2.5">
+                          <span className="w-6 h-6 rounded-full bg-amber-500 text-slate-950 font-black text-xs flex items-center justify-center shadow">
+                            1°
+                          </span>
+                          <div>
+                            <span className="text-xs font-bold text-white block">
+                              {pr.podium.firstPlace ? pr.podium.firstPlace.name : 'Por definir'}
+                            </span>
+                            <span className="text-[11px] text-amber-300/80 block">
+                              {pr.podium.firstPlace ? pr.podium.firstPlace.club : '—'}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">ORO</span>
+                      </div>
+
+                      {/* 2° Lugar (Plata) */}
+                      <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-400/10 border border-slate-400/30">
+                        <div className="flex items-center space-x-2.5">
+                          <span className="w-6 h-6 rounded-full bg-slate-300 text-slate-950 font-black text-xs flex items-center justify-center shadow">
+                            2°
+                          </span>
+                          <div>
+                            <span className="text-xs font-bold text-white block">
+                              {pr.podium.secondPlace ? pr.podium.secondPlace.name : 'Por definir'}
+                            </span>
+                            <span className="text-[11px] text-slate-400 block">
+                              {pr.podium.secondPlace ? pr.podium.secondPlace.club : '—'}
+                            </span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-300">PLATA</span>
+                      </div>
+
+                      {/* 3° Lugares (Doble Bronce IJF) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {/* Bronce A */}
+                        <div className="flex items-center justify-between p-2 rounded-xl bg-orange-700/15 border border-orange-600/30">
+                          <div className="flex items-center space-x-2">
+                            <span className="w-5 h-5 rounded-full bg-orange-600 text-white font-black text-[11px] flex items-center justify-center">
+                              3°
+                            </span>
+                            <div className="truncate">
+                              <span className="text-xs font-bold text-white block truncate">
+                                {pr.podium.thirdPlaceA ? pr.podium.thirdPlaceA.name : 'Por definir'}
+                              </span>
+                              <span className="text-[10px] text-orange-300/80 block truncate">
+                                {pr.podium.thirdPlaceA ? pr.podium.thirdPlaceA.club : '—'}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-[9px] font-black uppercase text-orange-400 flex-shrink-0">BRONCE</span>
+                        </div>
+
+                        {/* Bronce B */}
+                        <div className="flex items-center justify-between p-2 rounded-xl bg-orange-700/15 border border-orange-600/30">
+                          <div className="flex items-center space-x-2">
+                            <span className="w-5 h-5 rounded-full bg-orange-600 text-white font-black text-[11px] flex items-center justify-center">
+                              3°
+                            </span>
+                            <div className="truncate">
+                              <span className="text-xs font-bold text-white block truncate">
+                                {pr.podium.thirdPlaceB ? pr.podium.thirdPlaceB.name : 'Por definir'}
+                              </span>
+                              <span className="text-[10px] text-orange-300/80 block truncate">
+                                {pr.podium.thirdPlaceB ? pr.podium.thirdPlaceB.club : '—'}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-[9px] font-black uppercase text-orange-400 flex-shrink-0">BRONCE</span>
+                        </div>
+                      </div>
+
+                      {/* 5° Lugares */}
+                      {pr.podium.fifthPlaces.length > 0 && (
+                        <div className="pt-1 text-[11px] text-slate-400 flex flex-wrap gap-2">
+                          <span className="font-bold text-slate-500">5° Lugar:</span>
+                          {pr.podium.fifthPlaces.map((f, i) => (
+                            <span key={i} className="text-slate-300">
+                              {f.name} ({f.club}){i < pr.podium.fifthPlaces.length - 1 ? ',' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* 7° Lugares */}
+                      {pr.podium.seventhPlaces.length > 0 && (
+                        <div className="text-[11px] text-slate-500 flex flex-wrap gap-2">
+                          <span className="font-bold text-slate-500">7° Lugar:</span>
+                          {pr.podium.seventhPlaces.map((s, i) => (
+                            <span key={i} className="text-slate-400">
+                              {s.name} ({s.club}){i < pr.podium.seventhPlaces.length - 1 ? ',' : ''}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* MODAL: REASIGNAR JUDOKA A OTRA CATEGORÍA */}
+      {reassigningAthlete && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-white flex items-center space-x-2">
+                <Users className="w-5 h-5 text-amber-400" />
+                <span>Reasignar Judoka a Otra Categoría</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setReassigningAthlete(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                <p className="text-white font-bold">{reassigningAthlete.name}</p>
+                <p className="text-slate-400 font-mono">RUT: {reassigningAthlete.rut_dni} • Club: {reassigningAthlete.club_name}</p>
+                <p className="text-amber-400">Categoría actual: <span className="font-bold">{reassigningAthlete.category_name}</span></p>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Nueva Categoría de Destino
+                </label>
+                <select
+                  value={reassignTargetCatId}
+                  onChange={(e) => setReassignTargetCatId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} (Tatami #{c.assigned_tatami_number || 1})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setReassigningAthlete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingReassign}
+                onClick={handleReassignAthleteCategory}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition shadow"
+              >
+                {isSubmittingReassign ? 'Reasignando...' : 'Confirmar Reasignación'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1501,15 +1853,26 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   </label>
                   <select
                     value={newCatAgeGroup}
-                    onChange={(e) => setNewCatAgeGroup(e.target.value)}
+                    onChange={(e) => {
+                      const newAge = e.target.value;
+                      setNewCatAgeGroup(newAge);
+                      const g = newCatGender === 'F' ? 'F' : 'M';
+                      const weights = getWeightsForAgeDivision(newAge, g);
+                      if (weights.length > 0) {
+                        const parsedW = weights[0].replace(/[^0-9]/g, '');
+                        setNewCatWeight(parsedW || '73');
+                        const genStr = g === 'F' ? 'Femenino' : 'Masculino';
+                        setNewCatName(`${newAge} ${genStr} ${weights[0]}`);
+                      }
+                      setNewCatDuration(String(getRecommendedDuration(newAge)));
+                    }}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
                   >
-                    <option value="Infantil">Infantil</option>
-                    <option value="Sub-15">Sub-15</option>
-                    <option value="Cadetes (Sub-18)">Cadetes (Sub-18)</option>
-                    <option value="Junior (Sub-21)">Junior (Sub-21)</option>
-                    <option value="Senior">Senior</option>
-                    <option value="Master">Master</option>
+                    {JUDO_AGE_DIVISIONS.map((div) => (
+                      <option key={div.ageGroup} value={div.ageGroup}>
+                        {div.ageGroup}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -1519,7 +1882,18 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   </label>
                   <select
                     value={newCatGender}
-                    onChange={(e) => setNewCatGender(e.target.value as any)}
+                    onChange={(e) => {
+                      const newG = e.target.value as 'M' | 'F' | 'MIXED';
+                      setNewCatGender(newG);
+                      const g = newG === 'F' ? 'F' : 'M';
+                      const weights = getWeightsForAgeDivision(newCatAgeGroup, g);
+                      if (weights.length > 0) {
+                        const parsedW = weights[0].replace(/[^0-9]/g, '');
+                        setNewCatWeight(parsedW || '73');
+                        const genStr = g === 'F' ? 'Femenino' : 'Masculino';
+                        setNewCatName(`${newCatAgeGroup} ${genStr} ${weights[0]}`);
+                      }
+                    }}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
                   >
                     <option value="M">Masculino</option>
@@ -1532,14 +1906,27 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-300 block mb-1">
-                    Peso Límite (kg)
+                    Peso Oficial (Desplegable)
                   </label>
-                  <input
-                    type="number"
+                  <select
                     value={newCatWeight}
-                    onChange={(e) => setNewCatWeight(e.target.value)}
+                    onChange={(e) => {
+                      const wVal = e.target.value;
+                      setNewCatWeight(wVal);
+                      const gStr = newCatGender === 'F' ? 'Femenino' : 'Masculino';
+                      setNewCatName(`${newCatAgeGroup} ${gStr} -${wVal}kg`);
+                    }}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
-                  />
+                  >
+                    {getWeightsForAgeDivision(newCatAgeGroup, newCatGender === 'F' ? 'F' : 'M').map((wStr) => {
+                      const numericW = wStr.replace(/[^0-9]/g, '');
+                      return (
+                        <option key={wStr} value={numericW || '73'}>
+                          {wStr}
+                        </option>
+                      );
+                    })}
+                  </select>
                 </div>
 
                 <div>
@@ -1595,6 +1982,87 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           </div>
         </div>
       )}
+      </div>
+
+      {/* ==================================================================== */}
+      {/* VISTA DE IMPRESIÓN EXCLUSIVA: FICHAS OFICIALES DE MESAS DE CONTROL   */}
+      {/* ==================================================================== */}
+      <div className="hidden print:block print:w-full print:bg-white text-black font-sans p-6">
+        <div className="border-b-2 border-black pb-4 mb-6 flex justify-between items-end">
+          <div>
+            <span className="text-xs uppercase font-black tracking-widest text-gray-500 block">
+              SISTEMA OFICIAL DE COMPETICIÓN DE JUDO
+            </span>
+            <h1 className="text-2xl font-black uppercase text-black tracking-tight mt-0.5">
+              {tournament.name}
+            </h1>
+            <p className="text-xs text-gray-700 font-bold mt-1">
+              Fichas de Acceso y Credenciales Técnicas de Mesa de Control
+            </p>
+          </div>
+          <div className="text-right text-[11px] text-gray-500 font-mono">
+            <span>Fecha de emisión: {new Date().toLocaleDateString('es-CL')}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-6">
+          {credentials.map((cred) => (
+            <div
+              key={cred.station_slug}
+              className="border-2 border-dashed border-gray-400 rounded-2xl p-6 bg-white flex flex-col justify-between space-y-4 break-inside-avoid shadow-none"
+            >
+              <div className="flex items-center justify-between border-b pb-3 border-gray-300">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">
+                    Área de Combate
+                  </span>
+                  <h2 className="text-3xl font-black text-black tracking-tight">
+                    TATAMI {cred.tatami_number}
+                  </h2>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] font-bold uppercase text-gray-500 block">Estación</span>
+                  <span className="text-xs font-mono font-bold bg-gray-100 border border-gray-300 px-2.5 py-0.5 rounded-md">
+                    {cred.station_slug}
+                  </span>
+                </div>
+              </div>
+
+              {/* RECUADRO DESTACADO DEL PIN */}
+              <div className="bg-gray-100 border-2 border-black rounded-xl p-4 text-center my-1">
+                <span className="text-[11px] font-black uppercase tracking-widest text-gray-600 block">
+                  PIN DE ACCESO DE LA MESA
+                </span>
+                <span className="text-4xl font-mono font-black tracking-widest text-black block mt-1">
+                  {cred.pin}
+                </span>
+              </div>
+
+              {/* GUÍA TÉCNICA Y CONTROLES */}
+              <div className="text-xs space-y-1.5 text-gray-800 bg-gray-50 p-3.5 rounded-xl border border-gray-300">
+                <p className="font-bold text-gray-900 text-[11px] uppercase tracking-wide border-b border-gray-200 pb-1 mb-1">
+                  Instrucciones Rápidas de Operación:
+                </p>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]">
+                  <div><strong>Mesa:</strong> <span className="font-mono">/tatami/{cred.tatami_number}</span></div>
+                  <div><strong>Marcador TV:</strong> <span className="font-mono">/scoreboard/tatami-{cred.tatami_number}</span></div>
+                  <div><strong>[ESPACIO]</strong> Iniciar / Pausar Cronómetro</div>
+                  <div><strong>[1]</strong> Ippon (Fin de combate)</div>
+                  <div><strong>[W]</strong> Waza-ari</div>
+                  <div><strong>[S]</strong> Shido (Falta técnica)</div>
+                  <div><strong>[O]</strong> Osaekomi (Inmovilización)</div>
+                  <div><strong>[Enter]</strong> Proclamar & Pasar al siguiente</div>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-dashed border-gray-300 flex justify-between items-center text-[10px] text-gray-400">
+                <span>{tournament.name} • Tatami #{cred.tatami_number}</span>
+                <span>✂ Cortar ficha por línea punteada</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

@@ -198,11 +198,146 @@ export async function finishMatchAndPropagateWinnerAction(
       }
     }
 
+    // 4.1. PROPAGACIÓN DE PERDEDORES: REGLAMENTO IJF (REPECHAJE Y DOBLE BRONCE)
+    // - En Cuartos de Final (QF): El perdedor va a Repechaje 1 o Repechaje 2.
+    // - En Semifinales (SF): El perdedor va al combate por Bronce cruzado (evitar revanchas).
+    const loserId = winnerColor === 'WHITE' ? rawMatch?.blue_athlete_id : rawMatch?.white_athlete_id;
+    const catId = rawMatch?.category_id;
+    const roundCode = (rawMatch?.round || '').toUpperCase();
+
+    if (loserId && catId && (roundCode === 'QF' || roundCode.startsWith('QF') || roundCode === 'SF' || roundCode.startsWith('SF'))) {
+      try {
+        if (roundCode === 'QF' || roundCode.startsWith('QF')) {
+          // Consultar los cuartos de esta categoría para conocer el orden de combate
+          const { data: qfMatches } = await supabase
+            .from('matches')
+            .select('id, match_number')
+            .eq('category_id', catId)
+            .ilike('round', 'QF%')
+            .order('match_number', { ascending: true });
+
+          if (qfMatches && qfMatches.length >= 2) {
+            const qfIndex = qfMatches.findIndex((m) => m.id === matchId);
+            // QF 0 y 1 van a REPECHAGE_1; QF 2 y 3 van a REPECHAGE_2
+            const targetRepRound = qfIndex < 2 ? 'REPECHAGE_1' : 'REPECHAGE_2';
+            const targetSlot = (qfIndex % 2 === 0) ? 'white_athlete_id' : 'blue_athlete_id';
+
+            const { data: repMatch } = await supabase
+              .from('matches')
+              .select('id, white_athlete_id, blue_athlete_id, status')
+              .eq('category_id', catId)
+              .eq('round', targetRepRound)
+              .maybeSingle();
+
+            if (repMatch) {
+              const repUpdate: Record<string, any> = {
+                [targetSlot]: loserId,
+                updated_at: nowIso,
+              };
+              const oppositeSlot = targetSlot === 'white_athlete_id' ? repMatch.blue_athlete_id : repMatch.white_athlete_id;
+              if (oppositeSlot) {
+                repUpdate.status = 'SCHEDULED';
+              }
+              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
+            }
+          }
+        } else if (roundCode === 'SF' || roundCode.startsWith('SF')) {
+          // En Semifinales: Cruzar perdedores hacia el Bronce
+          // SF 1 loser -> BRONZE_2 (WHITE)
+          // SF 2 loser -> BRONZE_1 (WHITE)
+          const { data: sfMatches } = await supabase
+            .from('matches')
+            .select('id, match_number')
+            .eq('category_id', catId)
+            .ilike('round', 'SF%')
+            .order('match_number', { ascending: true });
+
+          if (sfMatches && sfMatches.length >= 2) {
+            const sfIndex = sfMatches.findIndex((m) => m.id === matchId);
+            // Si es SF 1 (index 0) va a BRONZE_2; si es SF 2 (index 1) va a BRONZE_1
+            const targetBronzeRound = sfIndex === 0 ? 'BRONZE_2' : 'BRONZE_1';
+
+            const { data: bronzeMatch } = await supabase
+              .from('matches')
+              .select('id, white_athlete_id, blue_athlete_id, status')
+              .eq('category_id', catId)
+              .eq('round', targetBronzeRound)
+              .maybeSingle();
+
+            if (bronzeMatch) {
+              const bronzeUpdate: Record<string, any> = {
+                white_athlete_id: loserId,
+                updated_at: nowIso,
+              };
+              if (bronzeMatch.blue_athlete_id) {
+                bronzeUpdate.status = 'SCHEDULED';
+              }
+              await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
+            }
+          }
+        }
+      } catch (loserErr) {
+        console.warn('[finishMatch] Error propagando perdedor a repechaje/bronce:', loserErr);
+      }
+    }
+
+    // 5. REGLA OFICIAL AL MEJOR DE 3 (BEST OF 3):
+    // Si un judoka gana 2 combates de la serie (2-0), el combate 3 (desempate) se cancela automáticamente.
+    let bo3Cancelled = false;
+    if (roundCode.startsWith('BEST_OF_3') && rawMatch?.category_id) {
+      try {
+        const { data: bo3Matches } = await supabase
+          .from('matches')
+          .select('id, round, winner_id, status')
+          .eq('category_id', rawMatch.category_id)
+          .ilike('round', 'BEST_OF_3%');
+
+        if (bo3Matches && bo3Matches.length > 0) {
+          const winCounts = new Map<string, number>();
+          bo3Matches.forEach((m) => {
+            const effWinner = m.id === matchId ? winnerId : m.winner_id;
+            if (effWinner) {
+              winCounts.set(effWinner, (winCounts.get(effWinner) || 0) + 1);
+            }
+          });
+
+          // Verificar si algún competidor alcanzó 2 victorias
+          const hasTwoWins = Array.from(winCounts.values()).some((count) => count >= 2);
+          if (hasTwoWins) {
+            const deciderMatch = bo3Matches.find(
+              (m) =>
+                (m.round.includes('M3') || m.round.includes('DECIDER')) &&
+                m.status !== 'FINISHED' &&
+                m.status !== 'CANCELLED'
+            );
+
+            if (deciderMatch) {
+              const { error: cancelErr } = await supabase
+                .from('matches')
+                .update({
+                  status: 'CANCELLED',
+                  updated_at: nowIso,
+                })
+                .eq('id', deciderMatch.id);
+
+              if (!cancelErr) {
+                bo3Cancelled = true;
+              } else {
+                console.warn('[finishMatch] Error cancelando combate 3 de Best of 3:', cancelErr.message);
+              }
+            }
+          }
+        }
+      } catch (bo3Err) {
+        console.warn('[finishMatch] Error evaluando regla Best of 3:', bo3Err);
+      }
+    }
+
     return {
       success: true,
       message: `Combate finalizado. Ganador: ${winnerName}.${
         propagated ? ` Propagado exitosamente al siguiente cruce (${nextMatchSlot}).` : ''
-      }`,
+      }${bo3Cancelled ? ' Serie concluida (2-0): Combate de desempate cancelado.' : ''}`,
       matchId,
       winnerId: winnerId || null,
       winnerName,
@@ -245,6 +380,100 @@ export async function updateMatchStatusAction(
       return { success: false, error: error.message };
     }
     return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Consulta un combate por su UUID específico para la mesa de control (ej: al hacer clic en "Llamar a Tatami").
+ */
+export async function getMatchByIdAction(matchId: string): Promise<{
+  success: boolean;
+  match?: any;
+  error?: string;
+}> {
+  try {
+    const supabase = createAdminClient();
+    const { data: m, error } = await supabase
+      .from('matches')
+      .select(`
+        id,
+        tournament_id,
+        category_id,
+        tatami_number,
+        match_number,
+        round,
+        status,
+        white_athlete_id,
+        blue_athlete_id,
+        next_match_id,
+        next_match_slot,
+        white_score,
+        blue_score,
+        current_match_time_seconds,
+        category:categories (
+          id,
+          name,
+          match_duration_seconds
+        ),
+        white_athlete:athletes!matches_white_athlete_id_fkey (
+          id,
+          first_name,
+          last_name,
+          club:clubs (
+            name
+          )
+        ),
+        blue_athlete:athletes!matches_blue_athlete_id_fkey (
+          id,
+          first_name,
+          last_name,
+          club:clubs (
+            name
+          )
+        )
+      `)
+      .eq('id', matchId)
+      .maybeSingle();
+
+    if (error || !m) {
+      return { success: false, error: error?.message || 'Combate no encontrado.' };
+    }
+
+    const whiteAth = Array.isArray(m.white_athlete) ? m.white_athlete[0] : m.white_athlete;
+    const blueAth = Array.isArray(m.blue_athlete) ? m.blue_athlete[0] : m.blue_athlete;
+
+    const normalizedMatch = {
+      id: m.id,
+      tournament_id: m.tournament_id,
+      category_id: m.category_id,
+      category_name: (m.category as any)?.name || 'Categoría Oficial',
+      tatami_number: m.tatami_number || 1,
+      match_number: m.match_number || 1,
+      white_athlete_name: whiteAth
+        ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
+        : 'Judoka Blanco',
+      white_club_name:
+        (whiteAth?.club as any)?.name ||
+        (Array.isArray(whiteAth?.club) ? (whiteAth.club[0] as any)?.name : 'Independiente'),
+      blue_athlete_name: blueAth
+        ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
+        : 'Judoka Azul',
+      blue_club_name:
+        (blueAth?.club as any)?.name ||
+        (Array.isArray(blueAth?.club) ? (blueAth.club[0] as any)?.name : 'Independiente'),
+      white_athlete_id: m.white_athlete_id || null,
+      blue_athlete_id: m.blue_athlete_id || null,
+      next_match_id: m.next_match_id || null,
+      next_match_slot: m.next_match_slot || null,
+      match_duration_seconds: (m.category as any)?.match_duration_seconds || 240,
+      status: m.status || 'SCHEDULED',
+      current_time_seconds: m.current_match_time_seconds || 0,
+      updated_at: new Date().toISOString(),
+    };
+
+    return { success: true, match: normalizedMatch };
   } catch (err: any) {
     return { success: false, error: err.message };
   }

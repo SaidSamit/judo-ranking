@@ -28,6 +28,7 @@ import {
   LogOut,
   ArrowLeft,
   ExternalLink,
+  Layers,
 } from 'lucide-react';
 
 interface NavItem {

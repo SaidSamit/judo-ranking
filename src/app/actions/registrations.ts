@@ -449,3 +449,55 @@ export async function getTournamentRegistrationsAction(
   }
 }
 
+/**
+ * Reasigna la inscripción de un judoka a una categoría diferente dentro del torneo.
+ * Permite ingresar competidores a categorías creadas posteriormente.
+ */
+export async function reassignAthleteCategoryAction(params: {
+  registrationId: string;
+  targetCategoryId: string;
+  tournamentId: string;
+}): Promise<{ success: boolean; message: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { registrationId, targetCategoryId, tournamentId } = params;
+
+    if (!registrationId || !targetCategoryId) {
+      return { success: false, message: 'Datos incompletos para reasignar categoría.' };
+    }
+
+    // 1. Obtener datos de la nueva categoría
+    const { data: targetCat, error: catErr } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('id', targetCategoryId)
+      .eq('tournament_id', tournamentId)
+      .maybeSingle();
+
+    if (catErr || !targetCat) {
+      return { success: false, message: 'La categoría de destino no existe en este torneo.' };
+    }
+
+    // 2. Actualizar la inscripción del judoka
+    const { error: updateErr } = await supabase
+      .from('tournament_registrations')
+      .update({
+        category_id: targetCategoryId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', registrationId);
+
+    if (updateErr) {
+      return { success: false, message: `Error al reasignar: ${updateErr.message}` };
+    }
+
+    return {
+      success: true,
+      message: `Judoka reasignado exitosamente a la categoría "${targetCat.name}".`,
+    };
+  } catch (err: any) {
+    console.error('[reassignAthleteCategoryAction] Error:', err);
+    return { success: false, message: 'Error interno reasignando categoría.' };
+  }
+}
+

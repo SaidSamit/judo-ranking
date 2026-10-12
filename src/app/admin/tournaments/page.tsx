@@ -191,7 +191,7 @@ export default function TournamentsPage() {
           </div>
           <p className="text-slate-400 text-sm max-w-3xl">
             Crea nuevos campeonatos, asigna la cantidad de tatamis y administra la inyección de
-            los deportistas ingresados a sus respectivas divisiones y categorías oficiales IJF.
+            los deportistas ingresados a sus respectivas divisiones y categorías oficiales.
           </p>
         </div>
 
@@ -407,7 +407,8 @@ export default function TournamentsPage() {
                     required
                     value={formStartDate}
                     onChange={(e) => setFormStartDate(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                    onClick={(e) => (e.target as any).showPicker?.()}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-amber-400 cursor-pointer [color-scheme:dark]"
                   />
                 </div>
 
@@ -418,7 +419,8 @@ export default function TournamentsPage() {
                     required
                     value={formEndDate}
                     onChange={(e) => setFormEndDate(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                    onClick={(e) => (e.target as any).showPicker?.()}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-amber-400 cursor-pointer [color-scheme:dark]"
                   />
                 </div>
               </div>

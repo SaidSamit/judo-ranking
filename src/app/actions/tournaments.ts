@@ -516,3 +516,45 @@ export async function getTournamentDetailsAction(tournamentId: string): Promise<
   return { success: false, error: 'Campeonato no encontrado' };
 }
 
+/**
+ * Obtiene el resumen del campeonato oficial activo para el login institucional.
+ */
+export async function getActiveTournamentSummaryAction(): Promise<{
+  id: string;
+  name: string;
+  tatamiCount: number;
+} | null> {
+  try {
+    const supabase = createAdminClient();
+    const { data } = await supabase
+      .from('tournaments')
+      .select('id, name, config')
+      .eq('status', 'ACTIVE')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      return {
+        id: data.id,
+        name: data.name,
+        tatamiCount: Number((data.config as any)?.tatami_count) || 2,
+      };
+    }
+  } catch (err) {
+    console.warn('Error obteniendo torneo activo:', err);
+  }
+
+  const memoryActive = inMemoryTournaments.find((t) => t.is_active) || inMemoryTournaments[0];
+  if (memoryActive) {
+    return {
+      id: memoryActive.id,
+      name: memoryActive.name,
+      tatamiCount: memoryActive.tatami_count || 2,
+    };
+  }
+
+  return null;
+}
+
+

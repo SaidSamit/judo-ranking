@@ -12,6 +12,7 @@ import {
   GeneratedMatch,
   sequenceTatamiMatches,
   estimateCategoryMatchesCount,
+  formatRoundName,
 } from '@/lib/rules/bracket-engine';
 
 export interface CategoryBracketStatus {
@@ -435,7 +436,7 @@ export async function getCategoryBracketAction(
         tatami_number: m.tatami_number,
         match_number: m.match_number,
         round: m.round,
-        round_name: m.round,
+        round_name: formatRoundName(m.round),
         white_athlete_id: m.white_athlete_id,
         blue_athlete_id: m.blue_athlete_id,
         white_athlete_name: whiteName,
@@ -556,6 +557,7 @@ export async function getTatamiQueueMatchesAction(
       `)
       .eq('tournament_id', targetTourId)
       .eq('tatami_number', tatamiNumber)
+      .neq('status', 'CANCELLED')
       .order('match_number', { ascending: true });
 
     if (error) {
@@ -581,7 +583,7 @@ export async function getTatamiQueueMatchesAction(
         white_club_name: whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente'),
         blue_athlete_name: blueName,
         blue_club_name: blueAth?.club?.name || (Array.isArray(blueAth?.club) ? blueAth.club[0]?.name : 'Independiente'),
-        round_name: m.round,
+        round_name: formatRoundName(m.round),
       };
     });
 
@@ -591,6 +593,218 @@ export async function getTatamiQueueMatchesAction(
     return { success: false, matches: [], error: err.message };
   }
 }
+
+export interface MultiTatamiMatch {
+  id: string;
+  match_number: number;
+  tatami_number: number;
+  category_name: string;
+  round_name: string;
+  white_athlete_name: string;
+  white_club_name: string;
+  blue_athlete_name: string;
+  blue_club_name: string;
+  status: 'SCHEDULED' | 'ONGOING' | 'FINISHED' | 'PENDING' | 'CANCELLED';
+  matchesUntilStart: number; // 0 = en curso ahora, 1 = siguiente combate, 2 = en 2 combates...
+}
+
+export interface TatamiColumn {
+  tatamiNumber: number;
+  activeMatch: MultiTatamiMatch | null;
+  upcomingMatches: MultiTatamiMatch[];
+  finishedMatches: MultiTatamiMatch[];
+  totalMatches: number;
+}
+
+/**
+ * Obtiene la cola de combates en cascada de TODOS los tatamis en paralelo.
+ * Agrupa los combates por tatami y calcula en cuántos combates más se disputará cada uno.
+ */
+export async function getAllTatamisQueueAction(
+  tournamentId?: string
+): Promise<{
+  success: boolean;
+  tournamentId: string;
+  tournamentName: string;
+  columns: TatamiColumn[];
+  error?: string;
+}> {
+  try {
+    const supabase = createAdminClient();
+
+    let targetTourId = tournamentId;
+    let tourName = 'Campeonato Oficial';
+    let configTatamiCount = 2;
+
+    if (!targetTourId) {
+      const { data: activeTour } = await supabase
+        .from('tournaments')
+        .select('id, name, config')
+        .eq('status', 'ACTIVE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeTour) {
+        targetTourId = activeTour.id;
+        tourName = activeTour.name;
+        configTatamiCount = Number((activeTour.config as any)?.tatami_count) || 2;
+      }
+    } else {
+      const { data: tour } = await supabase
+        .from('tournaments')
+        .select('name, config')
+        .eq('id', targetTourId)
+        .maybeSingle();
+      if (tour) {
+        tourName = tour.name;
+        configTatamiCount = Number((tour.config as any)?.tatami_count) || 2;
+      }
+    }
+
+    if (!targetTourId) {
+      return { success: false, tournamentId: '', tournamentName: '', columns: [], error: 'No hay campeonato activo' };
+    }
+
+    // Consultar todos los combates del torneo
+    const { data, error } = await supabase
+      .from('matches')
+      .select(`
+        id,
+        tournament_id,
+        category_id,
+        tatami_number,
+        match_number,
+        round,
+        status,
+        white_athlete_id,
+        blue_athlete_id,
+        category:categories (
+          name
+        ),
+        white_athlete:athletes!matches_white_athlete_id_fkey (
+          id,
+          first_name,
+          last_name,
+          club:clubs (
+            name
+          )
+        ),
+        blue_athlete:athletes!matches_blue_athlete_id_fkey (
+          id,
+          first_name,
+          last_name,
+          club:clubs (
+            name
+          )
+        )
+      `)
+      .eq('tournament_id', targetTourId)
+      .neq('status', 'CANCELLED')
+      .order('tatami_number', { ascending: true })
+      .order('match_number', { ascending: true });
+
+    if (error) {
+      console.warn('[getAllTatamisQueueAction] Error consultando combates:', error.message);
+      return { success: false, tournamentId: targetTourId, tournamentName: tourName, columns: [], error: error.message };
+    }
+
+    // Normalizar todos los combates
+    const normalized = (data || []).map((m: any) => {
+      const whiteAth = Array.isArray(m.white_athlete) ? m.white_athlete[0] : m.white_athlete;
+      const blueAth = Array.isArray(m.blue_athlete) ? m.blue_athlete[0] : m.blue_athlete;
+      const categoryObj = Array.isArray(m.category) ? m.category[0] : m.category;
+
+      const whiteName = whiteAth
+        ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
+        : 'Por definir';
+      const blueName = blueAth
+        ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
+        : 'Por definir';
+
+      return {
+        id: m.id,
+        match_number: m.match_number,
+        tatami_number: m.tatami_number,
+        category_name: categoryObj?.name || 'Categoría Oficial',
+        round_name: formatRoundName(m.round),
+        white_athlete_name: whiteName,
+        white_club_name: whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente'),
+        blue_athlete_name: blueName,
+        blue_club_name: blueAth?.club?.name || (Array.isArray(blueAth?.club) ? blueAth.club[0]?.name : 'Independiente'),
+        status: m.status as any,
+      };
+    });
+
+    // Detectar cantidad de tatamis según configuración y combates
+    const maxTatamiNumber = Math.max(
+      configTatamiCount,
+      ...normalized.map((m) => m.tatami_number),
+      1
+    );
+
+    // Agrupar por tatami y computar el conteo relativo de cada combate en la cola
+    const columns: TatamiColumn[] = [];
+
+    for (let t = 1; t <= maxTatamiNumber; t++) {
+      const tatamiMatches = normalized
+        .filter((m) => m.tatami_number === t)
+        .sort((a, b) => a.match_number - b.match_number);
+
+      const finished = tatamiMatches.filter((m) => m.status === 'FINISHED');
+
+      // 1. Detectar el combate actualmente en tatami (ONGOING, o el primer SCHEDULED listo en la mesa)
+      let activeMatchItem = tatamiMatches.find((m) => m.status === 'ONGOING') || null;
+      let remainingUpcoming: typeof tatamiMatches = [];
+
+      if (activeMatchItem) {
+        remainingUpcoming = tatamiMatches.filter(
+          (m) => (m.status === 'SCHEDULED' || m.status === 'PENDING') && m.id !== activeMatchItem!.id
+        );
+      } else {
+        const firstReady = tatamiMatches.find(
+          (m) => m.status === 'SCHEDULED' || m.status === 'PENDING'
+        );
+        if (firstReady) {
+          activeMatchItem = firstReady;
+          remainingUpcoming = tatamiMatches.filter(
+            (m) => (m.status === 'SCHEDULED' || m.status === 'PENDING') && m.id !== firstReady.id
+          );
+        }
+      }
+
+      // 2. Calcular cuenta de espera para los combates siguientes en la cola
+      // (1 = Próximo combate a entrar, 2 = En 2 combates...)
+      const upcomingWithCountdown: MultiTatamiMatch[] = remainingUpcoming.map((m, idx) => ({
+        ...m,
+        matchesUntilStart: idx + 1,
+      }));
+
+      const activeMulti: MultiTatamiMatch | null = activeMatchItem
+        ? { ...activeMatchItem, matchesUntilStart: 0 }
+        : null;
+
+      columns.push({
+        tatamiNumber: t,
+        activeMatch: activeMulti,
+        upcomingMatches: upcomingWithCountdown,
+        finishedMatches: finished.map((m) => ({ ...m, matchesUntilStart: -1 })),
+        totalMatches: tatamiMatches.length,
+      });
+    }
+
+    return {
+      success: true,
+      tournamentId: targetTourId,
+      tournamentName: tourName,
+      columns,
+    };
+  } catch (err: any) {
+    console.error('[getAllTatamisQueueAction] Error inesperado:', err);
+    return { success: false, tournamentId: '', tournamentName: '', columns: [], error: err.message };
+  }
+}
+
 
 /**
  * Obtiene un combate específico por su ID con datos completos de atletas y categoría.
@@ -832,6 +1046,8 @@ export async function getNextScheduledTatamiMatchAction(params: {
       category_name: categoryObj?.name || 'Categoría Oficial',
       tatami_number: rawData.tatami_number,
       match_number: rawData.match_number,
+      round: rawData.round || 'Ronda Oficial',
+      round_name: formatRoundName(rawData.round),
       white_athlete_name: whiteName,
       white_club_name: whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente'),
       blue_athlete_name: blueName,
@@ -1127,5 +1343,222 @@ export async function createTournamentCategoryAction(params: {
   } catch (err: any) {
     console.error('[createTournamentCategoryAction] Error:', err);
     return { success: false, message: 'Error inesperado creando categoría.', error: err.message };
+  }
+}
+
+export interface CategoryPodiumResult {
+  categoryId: string;
+  categoryName: string;
+  ageGroup: string;
+  gender: string;
+  isFinished: boolean;
+  totalMatches: number;
+  finishedMatches: number;
+  podium: {
+    firstPlace: { athleteId: string; name: string; club: string } | null;
+    secondPlace: { athleteId: string; name: string; club: string } | null;
+    thirdPlaceA: { athleteId: string; name: string; club: string } | null;
+    thirdPlaceB: { athleteId: string; name: string; club: string } | null;
+    fifthPlaces: { athleteId: string; name: string; club: string }[];
+    seventhPlaces: { athleteId: string; name: string; club: string }[];
+  };
+}
+
+/**
+ * Calcula y retorna el podio oficial (1°, 2°, Doble 3°, 5° y 7° lugar) de las categorías del campeonato.
+ */
+export async function getTournamentPodiumsAction(
+  tournamentId: string
+): Promise<{ success: boolean; results: CategoryPodiumResult[]; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+
+    // 1. Obtener categorías del campeonato
+    const { data: categories, error: catErr } = await supabase
+      .from('categories')
+      .select('id, name, age_group, gender')
+      .eq('tournament_id', tournamentId);
+
+    if (catErr || !categories) {
+      return { success: false, results: [], error: catErr?.message };
+    }
+
+    // 2. Obtener todos los combates del torneo
+    const { data: matches, error: matchErr } = await supabase
+      .from('matches')
+      .select(`
+        id,
+        category_id,
+        round,
+        status,
+        winner_id,
+        white_athlete_id,
+        blue_athlete_id,
+        white_athlete:athletes!matches_white_athlete_id_fkey (id, first_name, last_name, club:clubs (name)),
+        blue_athlete:athletes!matches_blue_athlete_id_fkey (id, first_name, last_name, club:clubs (name))
+      `)
+      .eq('tournament_id', tournamentId)
+      .neq('status', 'CANCELLED');
+
+    if (matchErr) {
+      return { success: false, results: [], error: matchErr?.message };
+    }
+
+    const athleteCache = new Map<string, { id: string; name: string; club: string }>();
+    (matches || []).forEach((m: any) => {
+      const w = Array.isArray(m.white_athlete) ? m.white_athlete[0] : m.white_athlete;
+      const b = Array.isArray(m.blue_athlete) ? m.blue_athlete[0] : m.blue_athlete;
+      if (w?.id) {
+        athleteCache.set(w.id, {
+          id: w.id,
+          name: `${w.first_name || ''} ${w.last_name || ''}`.trim(),
+          club: w.club?.name || (Array.isArray(w.club) ? w.club[0]?.name : 'Independiente'),
+        });
+      }
+      if (b?.id) {
+        athleteCache.set(b.id, {
+          id: b.id,
+          name: `${b.first_name || ''} ${b.last_name || ''}`.trim(),
+          club: b.club?.name || (Array.isArray(b.club) ? b.club[0]?.name : 'Independiente'),
+        });
+      }
+    });
+
+    const results: CategoryPodiumResult[] = categories.map((cat) => {
+      const catMatches = (matches || []).filter((m: any) => m.category_id === cat.id);
+      const totalMatches = catMatches.length;
+      const finishedMatches = catMatches.filter((m: any) => m.status === 'FINISHED').length;
+
+      let firstPlace: { athleteId: string; name: string; club: string } | null = null;
+      let secondPlace: { athleteId: string; name: string; club: string } | null = null;
+      let thirdPlaceA: { athleteId: string; name: string; club: string } | null = null;
+      let thirdPlaceB: { athleteId: string; name: string; club: string } | null = null;
+      const fifthPlaces: { athleteId: string; name: string; club: string }[] = [];
+      const seventhPlaces: { athleteId: string; name: string; club: string }[] = [];
+
+      // A. Comprobar si es Best of 3 o Eliminación simple
+      const finalMatch = catMatches.find((m: any) => m.round === 'FINAL' || m.round.includes('FINAL'));
+      const bo3Matches = catMatches.filter((m: any) => m.round.startsWith('BEST_OF_3'));
+
+      if (finalMatch && finalMatch.winner_id) {
+        const champ = athleteCache.get(finalMatch.winner_id);
+        if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
+
+        const runnerUpId = finalMatch.winner_id === finalMatch.white_athlete_id ? finalMatch.blue_athlete_id : finalMatch.white_athlete_id;
+        if (runnerUpId) {
+          const runnerUp = athleteCache.get(runnerUpId);
+          if (runnerUp) secondPlace = { athleteId: runnerUp.id, name: runnerUp.name, club: runnerUp.club };
+        }
+      } else if (bo3Matches.length > 0) {
+        const bo3Wins = new Map<string, number>();
+        bo3Matches.forEach((m: any) => {
+          if (m.winner_id) bo3Wins.set(m.winner_id, (bo3Wins.get(m.winner_id) || 0) + 1);
+        });
+        for (const [athId, wins] of bo3Wins.entries()) {
+          if (wins >= 2) {
+            const champ = athleteCache.get(athId);
+            if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
+          }
+        }
+        if (firstPlace) {
+          const m1 = bo3Matches[0];
+          const runnerUpId = m1?.white_athlete_id === firstPlace.athleteId ? m1?.blue_athlete_id : m1?.white_athlete_id;
+          if (runnerUpId) {
+            const ru = athleteCache.get(runnerUpId);
+            if (ru) secondPlace = { athleteId: ru.id, name: ru.name, club: ru.club };
+          }
+        }
+      } else if (catMatches.some((m: any) => m.round.startsWith('RR_'))) {
+        // En Round Robin (Liga), ordenar por victorias
+        const rrWins = new Map<string, number>();
+        catMatches.forEach((m: any) => {
+          if (m.winner_id) rrWins.set(m.winner_id, (rrWins.get(m.winner_id) || 0) + 1);
+        });
+        const sorted = Array.from(rrWins.entries()).sort((a, b) => b[1] - a[1]);
+        if (sorted[0]) {
+          const a = athleteCache.get(sorted[0][0]);
+          if (a) firstPlace = { athleteId: a.id, name: a.name, club: a.club };
+        }
+        if (sorted[1]) {
+          const a = athleteCache.get(sorted[1][0]);
+          if (a) secondPlace = { athleteId: a.id, name: a.name, club: a.club };
+        }
+        if (sorted[2]) {
+          const a = athleteCache.get(sorted[2][0]);
+          if (a) thirdPlaceA = { athleteId: a.id, name: a.name, club: a.club };
+        }
+      }
+
+      // B. Doble Bronce (BRONZE_1 y BRONZE_2)
+      const b1 = catMatches.find((m: any) => m.round === 'BRONZE_1');
+      const b2 = catMatches.find((m: any) => m.round === 'BRONZE_2');
+      const singleBronze = catMatches.find((m: any) => m.round === 'BRONZE');
+
+      if (b1 && b1.winner_id) {
+        const ath = athleteCache.get(b1.winner_id);
+        if (ath) thirdPlaceA = { athleteId: ath.id, name: ath.name, club: ath.club };
+        const loserId = b1.winner_id === b1.white_athlete_id ? b1.blue_athlete_id : b1.white_athlete_id;
+        if (loserId) {
+          const lAth = athleteCache.get(loserId);
+          if (lAth) fifthPlaces.push({ athleteId: lAth.id, name: lAth.name, club: lAth.club });
+        }
+      }
+      if (b2 && b2.winner_id) {
+        const ath = athleteCache.get(b2.winner_id);
+        if (ath) thirdPlaceB = { athleteId: ath.id, name: ath.name, club: ath.club };
+        const loserId = b2.winner_id === b2.white_athlete_id ? b2.blue_athlete_id : b2.white_athlete_id;
+        if (loserId) {
+          const lAth = athleteCache.get(loserId);
+          if (lAth) fifthPlaces.push({ athleteId: lAth.id, name: lAth.name, club: lAth.club });
+        }
+      }
+      if (singleBronze && singleBronze.winner_id && !thirdPlaceA) {
+        const ath = athleteCache.get(singleBronze.winner_id);
+        if (ath) thirdPlaceA = { athleteId: ath.id, name: ath.name, club: ath.club };
+      }
+
+      // C. Repechajes perdedores = 7° lugar
+      const rep1 = catMatches.find((m: any) => m.round === 'REPECHAGE_1');
+      const rep2 = catMatches.find((m: any) => m.round === 'REPECHAGE_2');
+      if (rep1 && rep1.winner_id) {
+        const loserId = rep1.winner_id === rep1.white_athlete_id ? rep1.blue_athlete_id : rep1.white_athlete_id;
+        if (loserId) {
+          const ath = athleteCache.get(loserId);
+          if (ath) seventhPlaces.push({ athleteId: ath.id, name: ath.name, club: ath.club });
+        }
+      }
+      if (rep2 && rep2.winner_id) {
+        const loserId = rep2.winner_id === rep2.white_athlete_id ? rep2.blue_athlete_id : rep2.white_athlete_id;
+        if (loserId) {
+          const ath = athleteCache.get(loserId);
+          if (ath) seventhPlaces.push({ athleteId: ath.id, name: ath.name, club: ath.club });
+        }
+      }
+
+      const isFinished = totalMatches > 0 && finishedMatches === totalMatches;
+
+      return {
+        categoryId: cat.id,
+        categoryName: cat.name,
+        ageGroup: cat.age_group,
+        gender: cat.gender,
+        isFinished,
+        totalMatches,
+        finishedMatches,
+        podium: {
+          firstPlace,
+          secondPlace,
+          thirdPlaceA,
+          thirdPlaceB,
+          fifthPlaces,
+          seventhPlaces,
+        },
+      };
+    });
+
+    return { success: true, results };
+  } catch (err: any) {
+    console.error('[getTournamentPodiumsAction] Error:', err);
+    return { success: false, results: [], error: err.message };
   }
 }

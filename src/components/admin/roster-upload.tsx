@@ -53,6 +53,42 @@ export interface DraftAthlete {
   seed?: number;
 }
 
+/**
+ * Limpia y formatea un RUT chileno insertando automáticamente el guión '-'.
+ * Tolera pegar strings con puntos, espacios o guiones ("19.876.543-2" -> "19876543-2").
+ */
+export function formatChileanRut(value: string): string {
+  const cleaned = value.replace(/[^0-9kK]/g, '').toUpperCase();
+  if (!cleaned) return '';
+  if (cleaned.length === 1) return cleaned;
+  const dv = cleaned.slice(-1);
+  const body = cleaned.slice(0, -1).slice(0, 8); // Máximo 8 dígitos de cuerpo
+  return `${body}-${dv}`;
+}
+
+export function validateChileanRut(rut: string): boolean {
+  const cleaned = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+  if (cleaned.length < 7 || cleaned.length > 9) return false;
+
+  const dv = cleaned.slice(-1);
+  const body = cleaned.slice(0, -1);
+
+  let sum = 0;
+  let multiplier = 2;
+  for (let i = body.length - 1; i >= 0; i--) {
+    sum += parseInt(body[i], 10) * multiplier;
+    multiplier = multiplier === 7 ? 2 : multiplier + 1;
+  }
+
+  const expectedDvNum = 11 - (sum % 11);
+  let expectedDv = '';
+  if (expectedDvNum === 11) expectedDv = '0';
+  else if (expectedDvNum === 10) expectedDv = 'K';
+  else expectedDv = expectedDvNum.toString();
+
+  return dv === expectedDv;
+}
+
 interface CategorySummary {
   name: string;
   count: number;
@@ -63,12 +99,14 @@ interface CategorySummary {
 interface RosterUploadProps {
   organizationId?: string;
   tournamentId?: string;
+  tournamentCategories?: { id: string; name: string }[];
   onRegistrationsConfirmed?: (count: number) => void;
 }
 
 export function RosterUpload({
   organizationId = 'a0000000-0000-0000-0000-000000000001',
   tournamentId = 'e0000000-0000-0000-0000-000000000001',
+  tournamentCategories = [],
   onRegistrationsConfirmed,
 }: RosterUploadProps) {
   const currentYear = new Date().getFullYear();
@@ -105,7 +143,7 @@ export function RosterUpload({
   // ============================================================================
   const availableDivInfo = useMemo(() => {
     if (!formBirthYear || typeof formBirthYear !== 'number' || isNaN(formBirthYear)) {
-      return { divisionName: '', categories: [] };
+      return { divisionName: '', categories: [] as string[], upperCategories: [] as string[] };
     }
     return getAvailableCategoriesForAthlete(formBirthYear, formGender, currentYear);
   }, [formBirthYear, formGender, currentYear]);
@@ -127,7 +165,7 @@ export function RosterUpload({
   const handleAddManualAthlete = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    // 1. Validación de RUT obligatorio
+    // 1. Validación de RUT obligatorio y Módulo 11
     const cleanRut = formRut.trim();
     if (!cleanRut) {
       setFeedbackMessage({
@@ -138,12 +176,21 @@ export function RosterUpload({
       return;
     }
 
+    if (!validateChileanRut(cleanRut)) {
+      setFeedbackMessage({
+        type: 'error',
+        text: `El RUT "${cleanRut}" no es válido (dígito verificador incorrecto). Por favor ingresa un RUT válido.`,
+      });
+      rutInputRef.current?.focus();
+      return;
+    }
+
     // 2. Validación de Nombre obligatorio
     const cleanName = formName.trim();
     if (!cleanName) {
       setFeedbackMessage({
         type: 'error',
-        text: 'Por favor, ingresa el Nombre Completo del atleta.',
+        text: 'Por favor, ingresa el Nombre Completo del judoka.',
       });
       nameInputRef.current?.focus();
       return;
@@ -188,7 +235,7 @@ export function RosterUpload({
     if (alreadyExists) {
       setFeedbackMessage({
         type: 'error',
-        text: `El atleta con RUT "${cleanRut}" ya se encuentra en el borrador temporal.`,
+        text: `El judoka con RUT "${cleanRut}" ya se encuentra en el borrador temporal.`,
       });
       rutInputRef.current?.focus();
       return;
@@ -503,7 +550,7 @@ export function RosterUpload({
                 type="text"
                 placeholder="Ej: 19.876.543-2"
                 value={formRut}
-                onChange={(e) => setFormRut(e.target.value)}
+                onChange={(e) => setFormRut(formatChileanRut(e.target.value))}
                 required
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400 font-mono"
                 autoFocus
@@ -621,14 +668,43 @@ export function RosterUpload({
                   required
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400 appearance-none pr-8 cursor-pointer"
                 >
-                  {availableDivInfo.categories.length === 0 ? (
+                  {availableDivInfo.categories.length === 0 && (!tournamentCategories || tournamentCategories.length === 0) ? (
                     <option value="">Ingresa el año de nacimiento...</option>
                   ) : (
-                    availableDivInfo.categories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))
+                    <>
+                      {/* Categorías oficiales de su división */}
+                      {availableDivInfo.categories.length > 0 && (
+                        <optgroup label={`División ${availableDivInfo.divisionName || 'Oficial'}`}>
+                          {availableDivInfo.categories.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+
+                      {/* Subir de categoría (edad superior permitida) */}
+                      {availableDivInfo.upperCategories && availableDivInfo.upperCategories.length > 0 && (
+                        <optgroup label="⚡ Subir de Categoría (Edad Superior Permitida)">
+                          {availableDivInfo.upperCategories.map((cat) => (
+                            <option key={`upper-${cat}`} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+
+                      {/* Categorías creadas en el torneo (incluyendo las creadas posteriormente) */}
+                      {tournamentCategories && tournamentCategories.length > 0 && (
+                        <optgroup label="🏆 Categorías Creadas en este Campeonato">
+                          {tournamentCategories.map((c) => (
+                            <option key={`tour-${c.id}`} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </>
                   )}
                 </select>
                 <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -763,7 +839,7 @@ export function RosterUpload({
                             type="text"
                             value={editForm.rut_dni}
                             onChange={(e) =>
-                              setEditForm({ ...editForm, rut_dni: e.target.value })
+                              setEditForm({ ...editForm, rut_dni: formatChileanRut(e.target.value) })
                             }
                             className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white font-mono"
                           />
@@ -832,16 +908,40 @@ export function RosterUpload({
                             className="w-full bg-slate-950 border border-amber-500 rounded px-2 py-1 text-xs text-white"
                           >
                             {/* Incluir categoría actual si no está en la lista estándar */}
-                            {!editAvailable.categories.includes(editForm.category) && (
-                              <option value={editForm.category}>
-                                {editForm.category}
-                              </option>
+                            {!editAvailable.categories.includes(editForm.category) &&
+                              !editAvailable.upperCategories?.includes(editForm.category) &&
+                              !tournamentCategories?.some((tc) => tc.name === editForm.category) && (
+                                <option value={editForm.category}>
+                                  {editForm.category}
+                                </option>
+                              )}
+                            {editAvailable.categories.length > 0 && (
+                              <optgroup label={`División ${editAvailable.divisionName || 'Oficial'}`}>
+                                {editAvailable.categories.map((c) => (
+                                  <option key={c} value={c}>
+                                    {c}
+                                  </option>
+                                ))}
+                              </optgroup>
                             )}
-                            {editAvailable.categories.map((c) => (
-                              <option key={c} value={c}>
-                                {c}
-                              </option>
-                            ))}
+                            {editAvailable.upperCategories && editAvailable.upperCategories.length > 0 && (
+                              <optgroup label="⚡ Subir de Categoría (Edad Superior)">
+                                {editAvailable.upperCategories.map((c) => (
+                                  <option key={`edit-upper-${c}`} value={c}>
+                                    {c}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                            {tournamentCategories && tournamentCategories.length > 0 && (
+                              <optgroup label="🏆 Categorías Creadas en este Campeonato">
+                                {tournamentCategories.map((tc) => (
+                                  <option key={`edit-tour-${tc.id}`} value={tc.name}>
+                                    {tc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
                           </select>
                         </td>
                         {/* Acciones de Edición */}
@@ -900,7 +1000,7 @@ export function RosterUpload({
                           type="button"
                           onClick={() => handleStartEdit(athlete)}
                           className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-                          title="Editar atleta"
+                          title="Editar judoka"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
@@ -928,7 +1028,7 @@ export function RosterUpload({
       {categorySummaries.length > 0 && (
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
           <h3 className="text-sm font-bold text-slate-300 flex items-center space-x-2">
-            <span>Diagnóstico de Llaves en Borrador (Reglas IJF)</span>
+            <span>Diagnóstico de Llaves en Borrador (Reglamento Oficial)</span>
           </h3>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -942,7 +1042,7 @@ export function RosterUpload({
                     {cat.name}
                   </span>
                   <span className="text-xs text-slate-400 mt-0.5 block">
-                    {cat.count} {cat.count === 1 ? 'atleta' : 'atletas'}
+                    {cat.count} {cat.count === 1 ? 'judoka' : 'judokas'}
                   </span>
                 </div>
 

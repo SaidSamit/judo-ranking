@@ -35,12 +35,14 @@ import {
 import { finishMatchAndPropagateWinnerAction, updateMatchStatusAction } from '@/app/actions/matches';
 import { getNextScheduledTatamiMatchAction } from '@/app/actions/brackets';
 import { isValidUuid } from '@/lib/utils/uuid';
+import { Sparkles, RotateCcw, Tv } from 'lucide-react';
 
 interface TatamiControlTableProps {
   initialMatch: LocalMatch;
+  isDemoMode?: boolean;
 }
 
-export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
+export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiControlTableProps) {
   // 0. Estado del Combate Activo (admite rotación dinámica de cola de tatami)
   const [currentMatch, setCurrentMatch] = useState<LocalMatch>(initialMatch);
   useEffect(() => {
@@ -299,6 +301,11 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       });
 
       // 2. Ejecutar Server Action para sellar en Supabase y PROPAGAR AL SIGUIENTE COMBATE (next_match_id)
+      if (isDemoMode || !isValidUuid(currentMatch.id)) {
+        // En modo demostración, no sincronizar hacia base de datos ni consultar cola
+        return;
+      }
+
       if (projection.winner) {
         finishMatchAndPropagateWinnerAction({
           matchId: currentMatch.id,
@@ -443,6 +450,23 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   // ============================================================================
   const dispatchEvent = useCallback(
     async (action: MatchAction, target: CombatantColor | null, payload = {}) => {
+      // CANDADO CRÍTICO: Bloquear inyección infinita de puntos tras victoria (Ippon, Waza-ari awasete ippon o Finalizado)
+      const isScoringAction = (
+        action === 'ADD_IPPON' ||
+        action === 'ADD_WAZA_ARI' ||
+        action === 'ADD_YUKO' ||
+        action === 'ADD_SHIDO' ||
+        action === 'ADD_HANSOKU_MAKE' ||
+        action === 'START_OSAEKOMI'
+      );
+
+      if (isScoringAction && (projection.winner !== null || matchStatus === 'FINISHED')) {
+        triggerWarning(
+          'El combate ya está definido o finalizado. Presiona Enter para cerrar/avanzar o Shift + Tecla para corregir.'
+        );
+        return;
+      }
+
       // CORRECCIÓN 2: Candado de Shidos (Máximo 3) y Candado post-descalificación
       if (action === 'ADD_SHIDO' && target) {
         const targetScore = target === 'WHITE' ? projection.white_score : projection.blue_score;
@@ -533,30 +557,45 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   );
 
   // ============================================================================
+  // REINICIO DE COMBATE EN MODO DEMOSTRACIÓN (PRÁCTICA)
+  // ============================================================================
+  const handleResetDemo = useCallback(() => {
+    setIsClockRunning(false);
+    setActiveOsaekomi(null);
+    setOsaekomiSeconds(0);
+    setIsGoldenScore(false);
+    setEvents([]);
+    setMatchTimeRemaining(currentMatch.match_duration_seconds || 240);
+    setMatchStatus('SCHEDULED');
+    setNextScheduledMatch(null);
+    setAutoAdvanceCountdown(null);
+    setIsQueueEmpty(false);
+  }, [currentMatch.match_duration_seconds]);
+
+  // ============================================================================
   // CONTROL DEL RELOJ PRINCIPAL (HAJIME / MATE)
   // ============================================================================
   const toggleClock = useCallback(() => {
-    setIsClockRunning((prev) => {
-      const next = !prev;
-      dispatchEvent(next ? 'START_CLOCK' : 'STOP_CLOCK', null);
-      if (next && matchStatus === 'SCHEDULED') {
-        setMatchStatus('ONGOING');
-        if (isValidUuid(currentMatch.id)) {
-          updateMatchStatusAction(currentMatch.id, 'ONGOING').catch((err) =>
-            console.warn('[TatamiControlTable] Error actualizando status a ONGOING:', err)
-          );
-        }
-      } else if (!next && matchStatus === 'ONGOING') {
-        setMatchStatus('PAUSED');
-        if (isValidUuid(currentMatch.id)) {
-          updateMatchStatusAction(currentMatch.id, 'PAUSED').catch((err) =>
-            console.warn('[TatamiControlTable] Error actualizando status a PAUSED:', err)
-          );
-        }
+    const nextRunning = !isClockRunning;
+    setIsClockRunning(nextRunning);
+    dispatchEvent(nextRunning ? 'START_CLOCK' : 'STOP_CLOCK', null);
+
+    if (nextRunning && matchStatus === 'SCHEDULED') {
+      setMatchStatus('ONGOING');
+      if (!isDemoMode && isValidUuid(currentMatch.id)) {
+        updateMatchStatusAction(currentMatch.id, 'ONGOING').catch((err) =>
+          console.warn('[TatamiControlTable] Error actualizando status a ONGOING:', err)
+        );
       }
-      return next;
-    });
-  }, [currentMatch.id, dispatchEvent, matchStatus]);
+    } else if (!nextRunning && matchStatus === 'ONGOING') {
+      setMatchStatus('PAUSED');
+      if (!isDemoMode && isValidUuid(currentMatch.id)) {
+        updateMatchStatusAction(currentMatch.id, 'PAUSED').catch((err) =>
+          console.warn('[TatamiControlTable] Error actualizando status a PAUSED:', err)
+        );
+      }
+    }
+  }, [currentMatch.id, dispatchEvent, isClockRunning, isDemoMode, matchStatus]);
 
   // ============================================================================
   // CONTROL DE RETENCIÓN: OSAEKOMI SWAP Y GESTIÓN DE SESIÓN
@@ -824,7 +863,19 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
   // El modal SOLO se activa si hubo un Hansoku-Make DIRECTO intencional.
   // ============================================================================
   const declareFinish = useCallback(() => {
-    // CORRECCIÓN 3: Candado de Cierre sin Ganador
+    // Si el combate ya fue finalizado y se vuelve a presionar Enter: Cargar el próximo combate inmediatamente
+    if (matchStatus === 'FINISHED') {
+      if (nextScheduledMatch) {
+        loadNextMatch(nextScheduledMatch);
+      } else if (isDemoMode) {
+        handleResetDemo();
+      } else {
+        triggerWarning('Cola completada. No hay más combates pendientes en este tatami.');
+      }
+      return;
+    }
+
+    // Candado de Cierre sin Ganador
     if (!projection.winner) {
       triggerWarning('No hay un ganador definido. El combate no puede finalizarse sin resultado.');
       return;
@@ -838,7 +889,17 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
     setIsClockRunning(false);
     setMatchStatus('FINISHED');
     dispatchEvent('DECLARATION_FINISH', null);
-  }, [dispatchEvent, projection.has_direct_hansoku_make, projection.winner, triggerWarning]);
+  }, [
+    dispatchEvent,
+    handleResetDemo,
+    isDemoMode,
+    loadNextMatch,
+    matchStatus,
+    nextScheduledMatch,
+    projection.has_direct_hansoku_make,
+    projection.winner,
+    triggerWarning,
+  ]);
 
   // ============================================================================
   // ENLACE CON HOOK DE ATAJOS DE TECLADO
@@ -852,11 +913,14 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
       }
     },
     onUndoSpecificAction: handleUndoSpecificAction,
-    onToggleClock: toggleClock,
+    onToggleClock: () => {
+      if (matchStatus === 'FINISHED') return;
+      toggleClock();
+    },
     onStopOsaekomi: stopOsaekomi,
     onSwapOsaekomi: swapOsaekomi,
     onDeclareFinish: declareFinish,
-    isEnabled: matchStatus !== 'FINISHED' && !showHansokuModal,
+    isEnabled: !showHansokuModal,
   });
 
   return (
@@ -869,18 +933,52 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
         </div>
       )}
 
+      {/* BANNER MODO DEMOSTRACIÓN */}
+      {isDemoMode && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-6 py-2.5 flex items-center justify-between text-xs flex-shrink-0 z-20">
+          <div className="flex items-center space-x-2 text-amber-300 font-bold">
+            <Sparkles className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <span>
+              MESA DE CONTROL (MODO DEMOSTRACIÓN) • Combate interactivo para exhibición y prueba de marcadores (sin asignar a campeonatos)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleResetDemo}
+            className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[11px] uppercase tracking-wider transition shadow flex items-center space-x-1 flex-shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Reiniciar Marcador Demo</span>
+          </button>
+        </div>
+      )}
+
       {/* BARRA SUPERIOR: ESTADO DEL TATAMI Y METADATOS */}
       <header className="flex items-center justify-between px-6 py-3 bg-slate-900 border-b border-slate-800">
         <div className="flex items-center space-x-4">
           <span className="text-xl font-black tracking-wider text-amber-400">
-            TATAMI {currentMatch.tatami_number}
+            {isDemoMode ? 'TATAMI DEMO' : `TATAMI ${currentMatch.tatami_number}`}
           </span>
           <span className="text-sm px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-            {currentMatch.category_name || 'Categoría Oficial'} • Combate #{currentMatch.match_number}
+            {isDemoMode
+              ? 'Mesa de Demostración • Modo Práctica'
+              : `${currentMatch.category_name || 'Categoría Oficial'} • Combate #${currentMatch.match_number}`}
           </span>
         </div>
 
         <div className="flex items-center space-x-3">
+          {/* Botón Abrir TV Realtime */}
+          <a
+            href={isDemoMode ? '/scoreboard/demo' : `/scoreboard/tatami-${currentMatch.tatami_number}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center space-x-1.5 text-xs bg-purple-950/90 hover:bg-purple-900 text-purple-300 hover:text-white px-3 py-1 rounded-xl border border-purple-700/60 font-bold transition shadow-sm"
+            title="Abrir Pantalla TV Marcador en tiempo real para este Tatami"
+          >
+            <Tv className="w-3.5 h-3.5 text-purple-400" />
+            <span>Abrir TV Realtime</span>
+          </a>
+
           {/* Indicador Realtime Broadcast (TV) */}
           <div className="flex items-center space-x-2 text-xs bg-slate-950 px-2.5 py-1 rounded-full border border-slate-800">
             <span
@@ -1294,7 +1392,7 @@ export function TatamiControlTable({ initialMatch }: TatamiControlTableProps) {
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 space-y-5">
             <h3 className="text-xl font-bold text-white">Tipificación de Hansoku-Make</h3>
             <p className="text-sm text-slate-300">
-              Se ha registrado una descalificación directa. Según el reglamento IJF, debes especificar
+              Se ha registrado una descalificación directa. Según el reglamento oficial, debes especificar
               si la falta es Técnica o Disciplinaria (esta última anula puntos de ranking acumulados).
             </p>
 
