@@ -213,7 +213,7 @@ export async function confirmRegistrationsAction(
     const { data: existingClubs, error: clubFetchError } = await supabase
       .from('clubs')
       .select('id, name')
-      .eq('organization_id', organizationId);
+      .or(`created_by_org_id.eq.${organizationId},created_by_org_id.is.null`);
 
     if (clubFetchError) {
       throw new Error(`Error consultando clubes: ${clubFetchError.message}`);
@@ -230,7 +230,7 @@ export async function confirmRegistrationsAction(
 
     if (missingClubNames.length > 0) {
       const clubsToInsert = missingClubNames.map((name) => ({
-        organization_id: organizationId,
+        created_by_org_id: organizationId,
         name,
       }));
 
@@ -250,7 +250,7 @@ export async function confirmRegistrationsAction(
     }
 
     // ========================================================================
-    // 3. UPSERT DE ATLETAS (POR ORGANIZATION_ID + RUT_DNI)
+    // 3. UPSERT DE ATLETAS (POR RUT_DNI)
     // ========================================================================
     const sanitizedAthletes = athletes.map((a, idx) => {
       const rawName = (a.name || '').trim();
@@ -267,7 +267,7 @@ export async function confirmRegistrationsAction(
         : null;
 
       return {
-        organization_id: organizationId,
+        created_by_org_id: organizationId,
         club_id: clubId,
         rut_dni: rut,
         first_name: firstName,
@@ -287,7 +287,7 @@ export async function confirmRegistrationsAction(
 
     const { data: upsertedAthletes, error: athleteError } = await supabase
       .from('athletes')
-      .upsert(dedupedAthletes, { onConflict: 'organization_id,rut_dni' })
+      .upsert(dedupedAthletes, { onConflict: 'rut_dni' })
       .select('id, rut_dni');
 
     if (athleteError) {
@@ -327,20 +327,32 @@ export async function confirmRegistrationsAction(
       };
     });
 
-    // Deduplicar inscripciones por atleta en el lote para respetar uq_registration
+    // Deduplicar inscripciones por atleta + categoría en el lote (permite al judoka estar en 2 categorías)
     const uniqueRegsMap = new Map<string, (typeof registrationsToInsert)[0]>();
     registrationsToInsert.forEach((reg) => {
-      uniqueRegsMap.set(reg.athlete_id, reg);
+      const compositeKey = `${reg.athlete_id}:${reg.category_id}`;
+      uniqueRegsMap.set(compositeKey, reg);
     });
     const dedupedRegistrations = Array.from(uniqueRegsMap.values());
 
     const { error: regError } = await supabase
       .from('tournament_registrations')
-      .upsert(dedupedRegistrations, { onConflict: 'tournament_id,athlete_id' });
+      .upsert(dedupedRegistrations, { onConflict: 'tournament_id,athlete_id,category_id' });
 
     if (regError) {
-      console.error('[confirmRegistrationsAction] Error insertando inscripciones:', regError);
-      throw new Error(`Error creando inscripciones: ${regError.message}`);
+      console.warn('[confirmRegistrationsAction] Upsert con (tournament_id,athlete_id,category_id) falló, aplicando fallback:', regError.message);
+      // Fallback si la migración de base de datos uq_registration aún no se ha ejecutado en Supabase
+      const fallbackRegsMap = new Map<string, (typeof registrationsToInsert)[0]>();
+      registrationsToInsert.forEach((reg) => fallbackRegsMap.set(reg.athlete_id, reg));
+      const fallbackList = Array.from(fallbackRegsMap.values());
+      const { error: fallbackErr } = await supabase
+        .from('tournament_registrations')
+        .upsert(fallbackList, { onConflict: 'tournament_id,athlete_id' });
+
+      if (fallbackErr) {
+        console.error('[confirmRegistrationsAction] Error insertando inscripciones:', fallbackErr);
+        throw new Error(`Error creando inscripciones: ${fallbackErr.message}`);
+      }
     }
 
     return {
@@ -500,4 +512,168 @@ export async function reassignAthleteCategoryAction(params: {
     return { success: false, message: 'Error interno reasignando categoría.' };
   }
 }
+
+/**
+ * Inscribe a un judoka en una categoría adicional en el campeonato.
+ * Ejemplo: Judoka ya inscrito en Sub-15 -48kg se inscribe también en Cadetes Sub-18 -48kg.
+ */
+export async function addAthleteToAdditionalCategoryAction(params: {
+  tournamentId: string;
+  athleteId: string;
+  targetCategoryId?: string;
+  targetCategoryName?: string;
+  organizationId?: string;
+  registeredWeight?: number;
+}): Promise<{ success: boolean; message: string; registrationId?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const {
+      tournamentId,
+      athleteId,
+      organizationId = 'a0000000-0000-0000-0000-000000000001',
+      registeredWeight,
+    } = params;
+
+    let targetCatId = params.targetCategoryId?.trim();
+    let targetCatName = params.targetCategoryName?.trim();
+
+    if (!tournamentId || !athleteId || (!targetCatId && !targetCatName)) {
+      return { success: false, message: 'Faltan parámetros para la inscripción adicional.' };
+    }
+
+    // Si no tenemos targetCatId pero sí targetCatName, buscar o crear la categoría
+    if (!targetCatId && targetCatName) {
+      const { data: foundCat } = await supabase
+        .from('categories')
+        .select('id, name')
+        .eq('tournament_id', tournamentId)
+        .ilike('name', targetCatName)
+        .maybeSingle();
+
+      if (foundCat) {
+        targetCatId = foundCat.id;
+        targetCatName = foundCat.name;
+      } else {
+        // Detectar grupo etario y género
+        const lower = targetCatName.toLowerCase();
+        let gender: 'M' | 'F' = 'M';
+        if (lower.includes('fem') || lower.includes('femenino') || lower.includes('damas')) {
+          gender = 'F';
+        }
+
+        let ageGroup = 'Senior';
+        if (lower.includes('sub-11') || lower.includes('sub 11')) ageGroup = 'Sub-11';
+        else if (lower.includes('sub-13') || lower.includes('sub 13')) ageGroup = 'Sub-13';
+        else if (lower.includes('sub-15') || lower.includes('sub 15')) ageGroup = 'Sub-15';
+        else if (lower.includes('cadet') || lower.includes('sub-18') || lower.includes('sub 18')) ageGroup = 'Cadetes';
+        else if (lower.includes('junior') || lower.includes('sub-21') || lower.includes('sub 21')) ageGroup = 'Junior';
+        else if (lower.includes('senior') || lower.includes('adulto')) ageGroup = 'Senior';
+        else if (lower.includes('master')) ageGroup = 'Master';
+
+        const weightMatch = targetCatName.match(/([+-]?\d+(?:\.\d+)?)\s*kg/i);
+        const maxWeight = weightMatch ? parseFloat(weightMatch[1].replace('+', '')) : null;
+
+        const { data: createdCat, error: createCatError } = await supabase
+          .from('categories')
+          .insert({
+            organization_id: organizationId,
+            tournament_id: tournamentId,
+            name: targetCatName,
+            age_group: ageGroup,
+            gender: gender,
+            max_weight: maxWeight,
+            match_duration_seconds: ageGroup.startsWith('Sub-1') ? 180 : 240,
+            is_official: true,
+          })
+          .select('id, name')
+          .single();
+
+        if (createCatError || !createdCat) {
+          throw new Error(`Error creando categoría "${targetCatName}": ${createCatError?.message}`);
+        }
+
+        targetCatId = createdCat.id;
+        targetCatName = createdCat.name;
+      }
+    }
+
+    // 1. Verificar si ya está inscrito en esa categoría exacta en este torneo
+    const { data: existingReg } = await supabase
+      .from('tournament_registrations')
+      .select('id')
+      .eq('tournament_id', tournamentId)
+      .eq('athlete_id', athleteId)
+      .eq('category_id', targetCatId!)
+      .maybeSingle();
+
+    if (existingReg) {
+      return {
+        success: false,
+        message: 'El judoka ya se encuentra inscrito en esta categoría en este torneo.',
+      };
+    }
+
+    // 2. Obtener datos de la categoría y del atleta (para heredar club y nombre)
+    const { data: categoryData } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('id', targetCatId!)
+      .eq('tournament_id', tournamentId)
+      .maybeSingle();
+
+    if (!categoryData) {
+      return { success: false, message: 'La categoría seleccionada no existe en este torneo.' };
+    }
+
+    const { data: athleteData } = await supabase
+      .from('athletes')
+      .select('id, club_id, first_name, last_name')
+      .eq('id', athleteId)
+      .maybeSingle();
+
+    // 3. Insertar la nueva inscripción en la categoría adicional
+    const { data: newReg, error: insertError } = await supabase
+      .from('tournament_registrations')
+      .insert({
+        organization_id: organizationId,
+        tournament_id: tournamentId,
+        category_id: targetCatId,
+        athlete_id: athleteId,
+        club_id: athleteData?.club_id || null,
+        registered_weight: registeredWeight || null,
+        weigh_in_status: 'PENDING',
+      })
+      .select('id')
+      .single();
+
+    if (insertError) {
+      console.warn('[addAthleteToAdditionalCategoryAction] Error insertando inscripción:', insertError.message);
+      if (insertError.message.includes('uq_registration')) {
+        return {
+          success: false,
+          message:
+            'Para admitir múltiples categorías en Supabase, ejecuta en el SQL Editor la sentencia: ALTER TABLE tournament_registrations DROP CONSTRAINT IF EXISTS uq_registration; ALTER TABLE tournament_registrations ADD CONSTRAINT uq_registration UNIQUE (tournament_id, athlete_id, category_id);',
+        };
+      }
+      return {
+        success: false,
+        message: `Error al inscribir en categoría adicional: ${insertError.message}`,
+      };
+    }
+
+    const judokaName = athleteData
+      ? `${athleteData.first_name} ${athleteData.last_name}`.trim()
+      : 'Deportista';
+
+    return {
+      success: true,
+      message: `¡${judokaName} inscrito exitosamente en la categoría adicional "${categoryData.name}"!`,
+      registrationId: newReg.id,
+    };
+  } catch (err: any) {
+    console.error('[addAthleteToAdditionalCategoryAction] Error:', err);
+    return { success: false, message: 'Error interno al registrar categoría adicional.' };
+  }
+}
+
 

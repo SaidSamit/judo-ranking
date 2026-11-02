@@ -41,6 +41,7 @@ import {
   getAvailableCategoriesForAthlete,
   getAllPossibleCategories,
 } from '@/lib/rules/judo-categories';
+import { parseExcelRoster } from '@/lib/utils/excel-roster-parser';
 
 export interface DraftAthlete {
   id: string; // ID local temporal
@@ -225,21 +226,28 @@ export function RosterUpload({
       return;
     }
 
-    // Verificar si el RUT ya existe en el borrador
-    const alreadyExists = draftAthletes.some(
+    // Verificar si el judoka ya existe en la MISMA categoría en el borrador
+    const alreadyInSameCategory = draftAthletes.some(
       (a) =>
         a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase() ===
-        cleanRut.replace(/[.\-\s]/g, '').toUpperCase()
+          cleanRut.replace(/[.\-\s]/g, '').toUpperCase() &&
+        a.category.trim().toLowerCase() === cleanCategory.trim().toLowerCase()
     );
 
-    if (alreadyExists) {
+    if (alreadyInSameCategory) {
       setFeedbackMessage({
         type: 'error',
-        text: `El judoka con RUT "${cleanRut}" ya se encuentra en el borrador temporal.`,
+        text: `El judoka con RUT "${cleanRut}" ya está inscrito en la categoría "${cleanCategory}" en el borrador.`,
       });
       rutInputRef.current?.focus();
       return;
     }
+
+    const isAdditionalCategory = draftAthletes.some(
+      (a) =>
+        a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase() ===
+        cleanRut.replace(/[.\-\s]/g, '').toUpperCase()
+    );
 
     const cleanClub = formClub.trim() || 'Independiente';
 
@@ -260,19 +268,68 @@ export function RosterUpload({
     setFormName('');
     setFeedbackMessage({
       type: 'info',
-      text: `Atleta "${cleanName}" (${cleanCategory}) agregado al borrador.`,
+      text: isAdditionalCategory
+        ? `Atleta "${cleanName}" inscrito en categoría ADICIONAL (${cleanCategory}).`
+        : `Atleta "${cleanName}" (${cleanCategory}) agregado al borrador.`,
     });
 
     rutInputRef.current?.focus();
   };
 
   // ============================================================================
-  // ACCIÓN 2: IMPORTAR CSV MASIVAMENTE Y ANEXAR AL BORRADOR
+  // ACCIÓN 2: IMPORTAR PLANILLA EXCEL (.xlsx/.xls) O CSV MASIVAMENTE
   // ============================================================================
-  const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const fileName = file.name.toLowerCase();
+
+    // 1. IMPORTAR ARCHIVO EXCEL (.xlsx / .xls)
+    if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const parseResult = await parseExcelRoster(arrayBuffer);
+
+        if (!parseResult.success || parseResult.athletes.length === 0) {
+          setFeedbackMessage({
+            type: 'error',
+            text:
+              parseResult.message ||
+              `No se encontraron atletas válidos en la planilla Excel "${file.name}". Verifica que contenga las columnas oficiales (NOMBRE, APELLIDO, GENERO, FEC. NAC., CATEGORÍA, etc.).`,
+          });
+          if (csvInputRef.current) csvInputRef.current.value = '';
+          return;
+        }
+
+        const imported: DraftAthlete[] = parseResult.athletes.map((p, idx) => ({
+          id: `excel-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+          rut_dni: p.rut_dni,
+          name: p.name,
+          club_name: p.club_name,
+          birth_year: p.birth_year,
+          gender: p.gender,
+          category: p.category,
+        }));
+
+        setDraftAthletes((prev) => [...imported, ...prev]);
+        setFeedbackMessage({
+          type: 'success',
+          text: `¡Éxito! Se importaron ${imported.length} inscripciones desde "${file.name}" (incluyendo categorías adicionales).`,
+        });
+        setShowCsvDropzone(false);
+      } catch (err: any) {
+        setFeedbackMessage({
+          type: 'error',
+          text: `Error al procesar archivo Excel: ${err.message || err}`,
+        });
+      } finally {
+        if (csvInputRef.current) csvInputRef.current.value = '';
+      }
+      return;
+    }
+
+    // 2. IMPORTAR ARCHIVO CSV
     Papa.parse<Record<string, any>>(file, {
       header: true,
       skipEmptyLines: true,
@@ -474,6 +531,16 @@ export function RosterUpload({
     });
   }, [draftAthletes]);
 
+  // Contabilizar apariciones de RUT para detectar inscripciones en múltiples categorías
+  const athleteRutCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    draftAthletes.forEach((a) => {
+      const key = a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase();
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    return map;
+  }, [draftAthletes]);
+
   return (
     <div className="w-full space-y-6 text-slate-100 font-sans">
       {/* ==================================================================== */}
@@ -496,28 +563,28 @@ export function RosterUpload({
             </p>
           </div>
 
-          {/* BOTÓN SECUNDARIO: ABRIR IMPORTACIÓN CSV */}
+          {/* BOTÓN SECUNDARIO: ABRIR IMPORTACIÓN EXCEL / CSV */}
           <button
             type="button"
             onClick={() => setShowCsvDropzone((prev) => !prev)}
             className="flex items-center space-x-2 text-xs px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition font-bold"
           >
-            <Upload className="w-3.5 h-3.5 text-amber-400" />
-            <span>{showCsvDropzone ? 'Ocultar Carga CSV' : 'Importar CSV de Respaldo'}</span>
+            <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+            <span>{showCsvDropzone ? 'Ocultar Carga' : 'Importar Planilla Excel / CSV'}</span>
           </button>
         </div>
 
-        {/* ÁREA DESPLEGABLE DE CSV (UI SECUNDARIA) */}
+        {/* ÁREA DESPLEGABLE DE EXCEL / CSV (UI SECUNDARIA) */}
         {showCsvDropzone && (
           <div className="p-4 bg-slate-950/80 border-2 border-dashed border-slate-700 rounded-xl flex items-center justify-between gap-4">
             <div className="flex items-center space-x-3">
               <FileSpreadsheet className="w-8 h-8 text-emerald-400 flex-shrink-0" />
               <div>
                 <span className="text-sm font-bold text-white block">
-                  Carga Masiva desde CSV
+                  Carga Masiva desde Planilla Excel o CSV
                 </span>
                 <span className="text-xs text-slate-400 block">
-                  Columnas admitidas: rut, nombre, apellido, club, ano_nacimiento, genero, categoria.
+                  Soporta planillas oficiales (Ficha de Campeonato .xlsx con múltiples categorías) y archivos CSV.
                 </span>
               </div>
             </div>
@@ -528,8 +595,8 @@ export function RosterUpload({
               <input
                 ref={csvInputRef}
                 type="file"
-                accept=".csv,.tsv,.txt"
-                onChange={handleCsvImport}
+                accept=".xlsx,.xls,.csv,.tsv,.txt"
+                onChange={handleFileUpload}
                 className="hidden"
               />
             </label>
@@ -993,7 +1060,14 @@ export function RosterUpload({
                         </span>
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-200">
-                        {athlete.category}
+                        <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                          <span>{athlete.category}</span>
+                          {(athleteRutCounts.get(athlete.rut_dni.replace(/[.\-\s]/g, '').toUpperCase()) || 0) > 1 && (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-900/70 text-blue-300 border border-blue-600/50 text-[10px] font-bold">
+                              Adicional
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right space-x-1.5">
                         <button

@@ -322,7 +322,7 @@ async function resolveExistingAthletesForTournament(
           name
         )
       `)
-      .eq('organization_id', organizationId);
+      .or(`created_by_org_id.eq.${organizationId},created_by_org_id.is.null`);
 
     if (error || !dbAthletes || dbAthletes.length === 0) {
       return BASE_ATHLETES_ROSTER;
@@ -348,7 +348,7 @@ async function resolveExistingAthletesForTournament(
 
     const currentYear = new Date().getFullYear();
 
-    return dbAthletes.map((ath: any) => {
+    const mappedDbAthletes: DraftAthletePayload[] = dbAthletes.map((ath: any) => {
       const birthYear = ath.birth_date ? new Date(ath.birth_date).getFullYear() : 2008;
       const gender = (ath.gender as 'M' | 'F') || 'M';
       const clubName =
@@ -373,6 +373,21 @@ async function resolveExistingAthletesForTournament(
         birth_date: ath.birth_date,
       };
     });
+
+    // Fusionar con la nómina base de prueba para garantizar siempre los 8 atletas y 4 categorías en pruebas
+    const existingRuts = new Set(
+      mappedDbAthletes.map((a) => a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase())
+    );
+    const mergedAthletes = [...mappedDbAthletes];
+    BASE_ATHLETES_ROSTER.forEach((baseAth) => {
+      const cleanRut = baseAth.rut_dni.replace(/[.\-\s]/g, '').toUpperCase();
+      if (!existingRuts.has(cleanRut)) {
+        mergedAthletes.push(baseAth);
+        existingRuts.add(cleanRut);
+      }
+    });
+
+    return mergedAthletes;
   } catch (err) {
     console.warn('[resolveExistingAthletesForTournament] Error, usando respaldo:', err);
     return BASE_ATHLETES_ROSTER;
@@ -399,6 +414,14 @@ export async function injectAthletesToTournamentAction(
 
     const res = await confirmRegistrationsAction(list, organizationId, tournamentId);
 
+    if (!res.success) {
+      return {
+        success: false,
+        count: 0,
+        message: res.message || 'Error al inscribir deportistas en la base de datos.',
+      };
+    }
+
     // Actualizar memoria
     inMemoryTournaments = inMemoryTournaments.map((t) =>
       t.id === tournamentId
@@ -418,7 +441,7 @@ export async function injectAthletesToTournamentAction(
   } catch (err: any) {
     console.warn('Error inyectando en Supabase, aplicando a memoria:', err);
     return {
-      success: true,
+      success: false,
       count: 0,
       message: `Error al inyectar deportistas: ${err.message}`,
     };

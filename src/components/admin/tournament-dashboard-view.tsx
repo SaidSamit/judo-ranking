@@ -57,6 +57,7 @@ import {
   getTournamentRegistrationsAction,
   RegisteredAthleteSummary,
   reassignAthleteCategoryAction,
+  addAthleteToAdditionalCategoryAction,
 } from '@/app/actions/registrations';
 import {
   getWeighInAthletesAction,
@@ -170,6 +171,12 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const [reassigningAthlete, setReassigningAthlete] = useState<RegisteredAthleteSummary | null>(null);
   const [reassignTargetCatId, setReassignTargetCatId] = useState<string>('');
   const [isSubmittingReassign, setIsSubmittingReassign] = useState(false);
+
+  // Estado para modal de inscribir judoka en categoría adicional (doble categoría)
+  const [additionalCatAthlete, setAdditionalCatAthlete] = useState<RegisteredAthleteSummary | null>(null);
+  const [additionalTargetCatId, setAdditionalTargetCatId] = useState<string>('');
+  const [additionalCustomCatName, setAdditionalCustomCatName] = useState<string>('');
+  const [isSubmittingAdditional, setIsSubmittingAdditional] = useState(false);
 
   // ==========================================================================
   // CARGA DE DATOS AISLADOS POR TORNEO
@@ -327,6 +334,51 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   };
 
+  // Manejador para inscribir a un judoka en una categoría adicional (e.g. Sub-15 + Sub-18)
+  const handleAddAthleteToAdditionalCategory = async () => {
+    if (!additionalCatAthlete) return;
+    const isCustom = additionalTargetCatId === '__custom__';
+    const targetName = isCustom ? additionalCustomCatName.trim() : undefined;
+    const targetId = isCustom ? undefined : additionalTargetCatId;
+
+    if (!targetId && !targetName) {
+      setFeedback({ type: 'error', text: 'Por favor selecciona o escribe la categoría adicional.' });
+      return;
+    }
+
+    setIsSubmittingAdditional(true);
+    try {
+      const res = await addAthleteToAdditionalCategoryAction({
+        tournamentId: tournament.id,
+        athleteId: additionalCatAthlete.athlete_id,
+        targetCategoryId: targetId,
+        targetCategoryName: targetName,
+      });
+
+      if (res.success) {
+        setFeedback({ type: 'success', text: res.message });
+        setAdditionalCatAthlete(null);
+        setAdditionalCustomCatName('');
+        await Promise.all([loadRoster(), loadWeighIn(), loadBrackets()]);
+      } else {
+        setFeedback({ type: 'error', text: res.message });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error inscribiendo en categoría adicional.' });
+    } finally {
+      setIsSubmittingAdditional(false);
+    }
+  };
+
+  // Detección de atletas con múltiples inscripciones en este campeonato
+  const athleteRegistrationCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    registeredAthletes.forEach((ath) => {
+      counts.set(ath.athlete_id, (counts.get(ath.athlete_id) || 0) + 1);
+    });
+    return counts;
+  }, [registeredAthletes]);
+
   // Disparar carga según la pestaña activa
   useEffect(() => {
     if (activeTab === 'roster') loadRoster();
@@ -336,10 +388,11 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     if (activeTab === 'results') loadPodiums();
   }, [activeTab, loadRoster, loadWeighIn, loadBrackets, loadCredentials, loadPodiums]);
 
-  // Carga inicial de conteos
+  // Carga inicial de datos (nómina y categorías)
   useEffect(() => {
     loadRoster();
-  }, [loadRoster]);
+    loadBrackets();
+  }, [loadRoster, loadBrackets]);
 
   // ==========================================================================
   // ACCIONES DEL ENCABEZADO
@@ -589,6 +642,9 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           text: res.message,
         });
         await loadBrackets();
+        if (reassigningAthlete && res.category?.id) {
+          setReassignTargetCatId(res.category.id);
+        }
       } else {
         setFeedback({
           type: 'error',
@@ -729,17 +785,26 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             </div>
           </div>
 
-          {/* ACCIÓN RÁPIDA: INYECTAR ATLETAS SI ESTÁ VACÍO */}
-          {registeredAthletes.length === 0 && (
+          {/* ACCIONES RÁPIDAS: INYECCIÓN Y NUEVA CATEGORÍA (SIEMPRE DISPONIBLES) */}
+          <div className="flex items-center space-x-2 flex-shrink-0">
             <button
               type="button"
               onClick={handleInjectBaseAthletes}
-              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 shadow-lg flex-shrink-0"
+              className={`px-3.5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 shadow-lg flex-shrink-0 ${
+                registeredAthletes.length === 0
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                  : 'bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 border border-slate-700'
+              }`}
+              title="Inyecta o actualiza la nómina oficial de prueba de 8 deportistas y 4 categorías"
             >
-              <Sparkles className="w-4 h-4" />
-              <span>Inyectar Nómina Base (8 Atletas)</span>
+              <Sparkles className="w-4 h-4 text-emerald-400" />
+              <span>
+                {registeredAthletes.length === 0
+                  ? 'Inyectar Nómina Base (8 Atletas)'
+                  : 'Re-inyectar Nómina Base'}
+              </span>
             </button>
-          )}
+          </div>
         </div>
 
         {/* MÉTRICAS DE AISLAMIENTO */}
@@ -917,7 +982,10 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 />
                 <button
                   type="button"
-                  onClick={loadRoster}
+                  onClick={() => {
+                    loadRoster();
+                    loadBrackets();
+                  }}
                   disabled={loadingRoster}
                   className="text-xs text-slate-400 hover:text-white flex items-center space-x-1"
                 >
@@ -973,9 +1041,16 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                             {ath.birth_year} ({ath.gender === 'M' ? 'Masc' : 'Fem'})
                           </td>
                           <td className="p-3">
-                            <span className="px-2 py-0.5 rounded-lg bg-blue-950/80 text-blue-300 border border-blue-800/80 text-[11px] font-bold">
-                              {ath.category_name}
-                            </span>
+                            <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                              <span className="px-2 py-0.5 rounded-lg bg-blue-950/80 text-blue-300 border border-blue-800/80 text-[11px] font-bold">
+                                {ath.category_name}
+                              </span>
+                              {(athleteRegistrationCounts.get(ath.athlete_id) || 0) > 1 && (
+                                <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold">
+                                  2+ Categorías
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="p-3 text-center">
                             <span
@@ -998,17 +1073,35 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                             {ath.actual_weight ? `${ath.actual_weight} kg` : '-'}
                           </td>
                           <td className="p-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReassigningAthlete(ath);
-                                setReassignTargetCatId(ath.category_id || (categories[0]?.id || ''));
-                              }}
-                              className="px-2 py-1 rounded bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 text-[11px] font-bold transition"
-                              title="Cambiar o reasignar categoría"
-                            >
-                              Cambiar Categoría
-                            </button>
+                            <div className="flex items-center justify-end space-x-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAdditionalCatAthlete(ath);
+                                  const otherCat = categories.find((c) => c.id !== ath.category_id);
+                                  setAdditionalTargetCatId(otherCat ? otherCat.id : (categories[0]?.id || ''));
+                                }}
+                                className="px-2 py-1 rounded bg-blue-900/60 hover:bg-blue-600 text-blue-200 hover:text-white text-[11px] font-bold transition flex items-center space-x-1 shadow-sm"
+                                title="Inscribir a este judoka en una categoría adicional (e.g. Sub-15 y Sub-18)"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>+ Adicional</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReassigningAthlete(ath);
+                                  const otherCat = categories.find((c) => c.id !== ath.category_id);
+                                  setReassignTargetCatId(
+                                    otherCat ? otherCat.id : (ath.category_id || (categories[0]?.id || ''))
+                                  );
+                                }}
+                                className="px-2 py-1 rounded bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 text-[11px] font-bold transition"
+                                title="Cambiar o reasignar categoría existente"
+                              >
+                                Cambiar
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1778,17 +1871,33 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 <label className="text-xs font-bold text-slate-300 block mb-1">
                   Nueva Categoría de Destino
                 </label>
-                <select
-                  value={reassignTargetCatId}
-                  onChange={(e) => setReassignTargetCatId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
-                >
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} (Tatami #{c.assigned_tatami_number || 1})
-                    </option>
-                  ))}
-                </select>
+                {categories.length > 0 ? (
+                  <select
+                    value={reassignTargetCatId}
+                    onChange={(e) => setReassignTargetCatId(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                  >
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.id === reassigningAthlete.category_id ? '(Actual)' : `(Tatami #${c.assigned_tatami_number || 1})`}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-amber-400 text-xs py-1 font-semibold">
+                    No hay categorías adicionales registradas en este campeonato.
+                  </p>
+                )}
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewCategoryModalOpen(true)}
+                    className="text-[11px] text-amber-400 hover:text-amber-300 font-bold flex items-center space-x-1 underline"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+ Crear o habilitar otra categoría de combate</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1807,6 +1916,111 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition shadow"
               >
                 {isSubmittingReassign ? 'Reasignando...' : 'Confirmar Reasignación'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: INSCRIBIR JUDOKA EN CATEGORÍA ADICIONAL (DOBLE CATEGORÍA) */}
+      {additionalCatAthlete && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-white flex items-center space-x-2">
+                <Plus className="w-5 h-5 text-blue-400" />
+                <span>Inscribir en Categoría Adicional</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setAdditionalCatAthlete(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                <p className="text-white font-bold">{additionalCatAthlete.name}</p>
+                <p className="text-slate-400 font-mono">
+                  RUT: {additionalCatAthlete.rut_dni} • Club: {additionalCatAthlete.club_name}
+                </p>
+                <p className="text-slate-300">
+                  Año: <span className="font-mono text-white">{additionalCatAthlete.birth_year}</span> ({additionalCatAthlete.gender === 'M' ? 'Masculino' : 'Femenino'})
+                </p>
+                <p className="text-blue-400">
+                  Categoría inscrita actual:{' '}
+                  <span className="font-bold">{additionalCatAthlete.category_name}</span>
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Categoría Adicional de Combate
+                </label>
+                <select
+                  value={additionalTargetCatId}
+                  onChange={(e) => setAdditionalTargetCatId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-400"
+                >
+                  <optgroup label="Categorías del Campeonato">
+                    {categories.map((c) => {
+                      const isSame = c.id === additionalCatAthlete.category_id;
+                      return (
+                        <option key={c.id} value={c.id} disabled={isSame}>
+                          {c.name} {isSame ? '(Ya inscrito)' : `(Tatami #${c.assigned_tatami_number || 1})`}
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                  <optgroup label="Otras Opciones">
+                    <option value="__custom__">➕ Escribir o crear otra categoría oficial...</option>
+                  </optgroup>
+                </select>
+
+                {additionalTargetCatId === '__custom__' && (
+                  <div className="mt-2 space-y-1">
+                    <label className="text-[11px] text-slate-400 block font-bold">
+                      Nombre de la nueva categoría (ej: Cadetes Sub-18 -48kg):
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ej: Cadetes Sub-18 -48kg"
+                      value={additionalCustomCatName}
+                      onChange={(e) => setAdditionalCustomCatName(e.target.value)}
+                      className="w-full bg-slate-950 border border-blue-500 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    />
+                  </div>
+                )}
+
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Permite al atleta competir en dos categorías (por ejemplo, Sub-15 y Cadetes Sub-18) según la normativa chilena e internacional.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setAdditionalCatAthlete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isSubmittingAdditional ||
+                  !additionalTargetCatId ||
+                  (additionalTargetCatId === '__custom__' && !additionalCustomCatName.trim()) ||
+                  additionalTargetCatId === additionalCatAthlete.category_id
+                }
+                onClick={handleAddAthleteToAdditionalCategory}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black uppercase tracking-wider transition shadow flex items-center space-x-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Plus className="w-4 h-4" />
+                <span>{isSubmittingAdditional ? 'Inscribiendo...' : 'Confirmar Categoría Adicional'}</span>
               </button>
             </div>
           </div>
