@@ -27,7 +27,7 @@ export interface CategoryBracketStatus {
   dsq_count: number;
   is_weigh_in_closed: boolean;
   matches_generated: boolean;
-  bracket_type?: 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION' | 'INSUFFICIENT';
+  bracket_type?: 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION' | 'UNCONTESTED' | 'INSUFFICIENT';
 }
 
 /**
@@ -159,7 +159,8 @@ export async function getTournamentCategoriesStatusAction(
       const isClosed = total > 0 && pending === 0;
 
       let bracketType: CategoryBracketStatus['bracket_type'] = 'SINGLE_ELIMINATION';
-      if (passed < 2) bracketType = 'INSUFFICIENT';
+      if (passed === 0) bracketType = 'INSUFFICIENT';
+      else if (passed === 1) bracketType = 'UNCONTESTED';
       else if (passed === 2) bracketType = 'BEST_OF_3';
       else if (passed >= 3 && passed <= 5) bracketType = 'ROUND_ROBIN';
       else bracketType = 'SINGLE_ELIMINATION';
@@ -247,10 +248,10 @@ export async function generateCategoryMatchesAction(params: {
 
     if (regErr) throw new Error(regErr.message);
 
-    if (!registrations || registrations.length < 2) {
+    if (!registrations || registrations.length < 1) {
       return {
         success: false,
-        message: 'No hay suficientes atletas pesados y aprobados (mínimo 2) para generar la llave.',
+        message: 'No hay atletas pesados y aprobados para generar la categoría.',
         error: 'Cantidad insuficiente de atletas clasificados.',
       };
     }
@@ -295,6 +296,8 @@ export async function generateCategoryMatchesAction(params: {
       .eq('tournament_id', actualTourId);
 
     // 6. Inserción pura y limpia en PostgreSQL con columnas nativas
+    // NOTA: la tabla 'matches' usa columnas planas (white_ippon, blue_wazaari, etc.)
+    // NO columnas JSONB white_score / blue_score.
     const matchesToInsert = bracketResult.matches.map((m) => ({
       id: m.id,
       organization_id: m.organization_id || actualOrgId,
@@ -302,14 +305,21 @@ export async function generateCategoryMatchesAction(params: {
       category_id: m.category_id || categoryId,
       tatami_number: m.tatami_number || assignedTatami,
       match_number: m.match_number,
-      round: m.round,
+      round: m.round || 'R1',
       white_athlete_id: m.white_athlete_id || null,
       blue_athlete_id: m.blue_athlete_id || null,
       next_match_id: m.next_match_id || null,
       next_match_slot: m.next_match_slot || null,
-      status: m.status,
-      white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
-      blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+      status: (m.status || 'PENDING') as 'PENDING',
+      // Columnas planas de puntaje (esquema real de Supabase)
+      white_ippon: 0,
+      white_wazaari: 0,
+      white_yuko: 0,
+      white_shido: 0,
+      blue_ippon: 0,
+      blue_wazaari: 0,
+      blue_yuko: 0,
+      blue_shido: 0,
       current_match_time_seconds: 0,
       is_golden_score: false,
     }));
@@ -324,10 +334,15 @@ export async function generateCategoryMatchesAction(params: {
     // Re-secuenciar toda la cola del tatami aplicando la regla de descanso IJF
     await resequenceTatamiMatchesAction(actualTourId, assignedTatami);
 
+    const successMsg =
+      bracketResult.bracket_type === 'UNCONTESTED'
+        ? `¡Campeón declarado en Tatami #${assignedTatami}! ${bracketResult.matches[0]?.white_athlete_name || 'El competidor'} gana la categoría sin contendor.`
+        : `¡Llave generada en Tatami #${assignedTatami}! Se programaron ${bracketResult.total_matches} combates (${bracketResult.summary.description}).`;
+
     return {
       success: true,
       result: bracketResult,
-      message: `¡Llave generada exitosamente en Tatami #${assignedTatami}! Se programaron ${bracketResult.total_matches} combates (${bracketResult.summary.description}).`,
+      message: successMsg,
     };
   } catch (err: any) {
     console.error('[generateCategoryMatchesAction] Error:', err);
@@ -372,8 +387,14 @@ export async function getCategoryBracketAction(
         next_match_id,
         next_match_slot,
         winner_id,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         current_match_time_seconds,
         is_golden_score,
         white_athlete:athletes!matches_white_athlete_id_fkey (
@@ -404,7 +425,9 @@ export async function getCategoryBracketAction(
     // Determinar el tipo de llave
     const firstRound = matches[0].round || '';
     let bracketType: BracketResult['bracket_type'] = 'SINGLE_ELIMINATION';
-    if (firstRound.startsWith('BEST_OF_3')) {
+    if (matches.length === 1 && !matches[0].blue_athlete_id) {
+      bracketType = 'UNCONTESTED';
+    } else if (firstRound.startsWith('BEST_OF_3')) {
       bracketType = 'BEST_OF_3';
     } else if (firstRound.startsWith('RR_')) {
       bracketType = 'ROUND_ROBIN';
@@ -446,16 +469,16 @@ export async function getCategoryBracketAction(
         winner_id: m.winner_id,
         status: m.status,
         white_score: {
-          ippon: m.white_score?.ippon || 0,
-          wazaari: m.white_score?.wazaari || 0,
-          yuko: m.white_score?.yuko || 0,
-          shido: m.white_score?.shido || 0,
+          ippon: m.white_ippon || 0,
+          wazaari: m.white_wazaari || 0,
+          yuko: m.white_yuko || 0,
+          shido: m.white_shido || 0,
         },
         blue_score: {
-          ippon: m.blue_score?.ippon || 0,
-          wazaari: m.blue_score?.wazaari || 0,
-          yuko: m.blue_score?.yuko || 0,
-          shido: m.blue_score?.shido || 0,
+          ippon: m.blue_ippon || 0,
+          wazaari: m.blue_wazaari || 0,
+          yuko: m.blue_yuko || 0,
+          shido: m.blue_shido || 0,
         },
         current_match_time_seconds: m.current_match_time_seconds || 0,
         is_golden_score: m.is_golden_score || false,
@@ -531,8 +554,14 @@ export async function getTatamiQueueMatchesAction(
         winner_id,
         started_at,
         ended_at,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         category:categories (
           id,
           name,
@@ -831,8 +860,14 @@ export async function getMatchByIdAction(
         next_match_id,
         next_match_slot,
         winner_id,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         current_match_time_seconds,
         category:categories (
           id,
@@ -943,8 +978,14 @@ export async function getNextScheduledTatamiMatchAction(params: {
       next_match_id,
       next_match_slot,
       winner_id,
-      white_score,
-      blue_score,
+      white_ippon,
+      white_wazaari,
+      white_yuko,
+      white_shido,
+      blue_ippon,
+      blue_wazaari,
+      blue_yuko,
+      blue_shido,
       current_match_time_seconds,
       category:categories (
         id,
@@ -1104,7 +1145,7 @@ export async function saveModifiedBracketAction(params: {
       .eq('category_id', categoryId)
       .eq('tournament_id', actualTourId);
 
-    // 3. Inserción pura en PostgreSQL
+    // 3. Inserción pura en PostgreSQL (columnas planas según esquema real de Supabase)
     const matchesToInsert = bracketResult.matches.map((m) => ({
       id: m.id,
       organization_id: m.organization_id || actualOrgId,
@@ -1112,14 +1153,20 @@ export async function saveModifiedBracketAction(params: {
       category_id: m.category_id || categoryId,
       tatami_number: m.tatami_number,
       match_number: m.match_number,
-      round: m.round,
+      round: m.round || 'R1',
       white_athlete_id: m.white_athlete_id || null,
       blue_athlete_id: m.blue_athlete_id || null,
       next_match_id: m.next_match_id || null,
       next_match_slot: m.next_match_slot || null,
-      status: m.status,
-      white_score: m.white_score || { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
-      blue_score: m.blue_score || { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+      status: (m.status || 'PENDING') as 'PENDING',
+      white_ippon: m.white_score?.ippon || 0,
+      white_wazaari: m.white_score?.wazaari || 0,
+      white_yuko: m.white_score?.yuko || 0,
+      white_shido: m.white_score?.shido || 0,
+      blue_ippon: m.blue_score?.ippon || 0,
+      blue_wazaari: m.blue_score?.wazaari || 0,
+      blue_yuko: m.blue_score?.yuko || 0,
+      blue_shido: m.blue_score?.shido || 0,
       current_match_time_seconds: 0,
       is_golden_score: false,
     }));

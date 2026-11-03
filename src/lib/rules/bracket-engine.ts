@@ -23,7 +23,7 @@
 //
 // ==============================================================================
 
-export type BracketType = 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION';
+export type BracketType = 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION' | 'UNCONTESTED';
 
 /**
  * Traduce y formatea códigos técnicos de rondas (QF, SF, FINAL, RR_R1, BEST_OF_3_M1, etc.)
@@ -133,11 +133,11 @@ export interface GeneratedMatch {
   white_club_name?: string;
   blue_club_name?: string;
   winner_id: string | null;
-  status: 'SCHEDULED' | 'PENDING';
-  white_score: { ippon: 0; wazaari: 0; yuko: 0; shido: 0 };
-  blue_score: { ippon: 0; wazaari: 0; yuko: 0; shido: 0 };
-  current_match_time_seconds: 0;
-  is_golden_score: false;
+  status: 'SCHEDULED' | 'PENDING' | 'FINISHED' | 'WALKOVER';
+  white_score: { ippon: number; wazaari: number; yuko: number; shido: number };
+  blue_score: { ippon: number; wazaari: number; yuko: number; shido: number };
+  current_match_time_seconds: number;
+  is_golden_score: boolean;
   // Enlaces de progresión para la llave
   next_match_id?: string | null;
   next_match_slot?: 'WHITE' | 'BLUE' | null;
@@ -168,6 +168,52 @@ function generateUUID(): string {
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+}
+
+// ==============================================================================
+// 0. MODALIDAD: UN SOLO COMPETIDOR (UNCONTESTED / SIN CONTENDOR) - N = 1
+// ==============================================================================
+
+function generateUncontested(
+  competitors: Competitor[],
+  opts: GenerateBracketOptions
+): BracketResult {
+  const c1 = competitors[0];
+  const startNum = opts.start_match_number || 1;
+  const match: GeneratedMatch = {
+    id: generateUUID(),
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum,
+    round: 'FINAL',
+    round_name: 'Campeón Directo (Sin Contendor)',
+    white_athlete_id: c1.id,
+    blue_athlete_id: null,
+    white_athlete_name: c1.name,
+    blue_athlete_name: 'Sin Contendor',
+    white_club_name: c1.club_name,
+    blue_club_name: '—',
+    winner_id: c1.id,
+    status: 'FINISHED',
+    white_score: { ippon: 1, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  };
+
+  return {
+    bracket_type: 'UNCONTESTED',
+    competitor_count: 1,
+    total_matches: 1,
+    matches: [match],
+    summary: {
+      description: '1 competidor en la categoría: Campeón declarado automáticamente sin contendor.',
+      rounds_count: 1,
+      byes_count: 0,
+    },
+  };
 }
 
 // ==============================================================================
@@ -206,7 +252,7 @@ function generateBestOf3(
     is_golden_score: false,
   });
 
-  // Combate 2: C2 (Blanco) vs C1 (Azul) - Alternancia de Judogi
+  // Combate 2: C1 (Blanco) vs C2 (Azul) - Se mantienen siempre los mismos colores
   matches.push({
     id: generateUUID(),
     organization_id: opts.organization_id,
@@ -216,12 +262,12 @@ function generateBestOf3(
     match_number: startNum + 1,
     round: 'BEST_OF_3_M2',
     round_name: 'Al Mejor de 3 - Combate 2',
-    white_athlete_id: c2.id,
-    blue_athlete_id: c1.id,
-    white_athlete_name: c2.name,
-    blue_athlete_name: c1.name,
-    white_club_name: c2.club_name,
-    blue_club_name: c1.club_name,
+    white_athlete_id: c1.id,
+    blue_athlete_id: c2.id,
+    white_athlete_name: c1.name,
+    blue_athlete_name: c2.name,
+    white_club_name: c1.club_name,
+    blue_club_name: c2.club_name,
     winner_id: null,
     status: 'SCHEDULED',
     white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -230,7 +276,7 @@ function generateBestOf3(
     is_golden_score: false,
   });
 
-  // Combate 3: C1 (Blanco) vs C2 (Azul) - Desempate condicional
+  // Combate 3: C1 (Blanco) vs C2 (Azul) - Desempate (mismos colores)
   matches.push({
     id: generateUUID(),
     organization_id: opts.organization_id,
@@ -260,7 +306,7 @@ function generateBestOf3(
     total_matches: matches.length,
     matches,
     summary: {
-      description: 'Modalidad al Mejor de 3: hasta 3 combates programados con rotación de color.',
+      description: 'Al Mejor de 3: hasta 3 combates programados (los competidores mantienen siempre sus mismos colores).',
       rounds_count: 3,
       byes_count: 0,
     },
@@ -681,14 +727,16 @@ export function generateCategoryBracket(
   competitors: Competitor[],
   options: GenerateBracketOptions
 ): BracketResult {
-  if (!competitors || competitors.length < 2) {
-    throw new Error('Se requieren al menos 2 competidores para generar un sorteo de llaves válido.');
+  if (!competitors || competitors.length < 1) {
+    throw new Error('Se requiere al menos 1 competidor para generar la categoría.');
   }
 
   const count = competitors.length;
   let result: BracketResult;
 
-  if (count === 2) {
+  if (count === 1) {
+    result = generateUncontested(competitors, options);
+  } else if (count === 2) {
     result = generateBestOf3(competitors, options);
   } else if (count >= 3 && count <= 5) {
     result = generateRoundRobin(competitors, options);

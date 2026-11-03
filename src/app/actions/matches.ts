@@ -72,8 +72,14 @@ export async function finishMatchAndPropagateWinnerAction(
         round,
         white_athlete_id,
         blue_athlete_id,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         status,
         next_match_id,
         next_match_slot,
@@ -138,8 +144,18 @@ export async function finishMatchAndPropagateWinnerAction(
       ended_at: nowIso,
       updated_at: nowIso,
     };
-    if (whiteScore) matchUpdatePayload.white_score = whiteScore;
-    if (blueScore) matchUpdatePayload.blue_score = blueScore;
+    if (whiteScore) {
+      if (typeof whiteScore.ippon !== 'undefined') matchUpdatePayload.white_ippon = whiteScore.ippon;
+      if (typeof whiteScore.wazaari !== 'undefined') matchUpdatePayload.white_wazaari = whiteScore.wazaari;
+      if (typeof whiteScore.yuko !== 'undefined') matchUpdatePayload.white_yuko = whiteScore.yuko;
+      if (typeof whiteScore.shido !== 'undefined') matchUpdatePayload.white_shido = whiteScore.shido;
+    }
+    if (blueScore) {
+      if (typeof blueScore.ippon !== 'undefined') matchUpdatePayload.blue_ippon = blueScore.ippon;
+      if (typeof blueScore.wazaari !== 'undefined') matchUpdatePayload.blue_wazaari = blueScore.wazaari;
+      if (typeof blueScore.yuko !== 'undefined') matchUpdatePayload.blue_yuko = blueScore.yuko;
+      if (typeof blueScore.shido !== 'undefined') matchUpdatePayload.blue_shido = blueScore.shido;
+    }
 
     const { error: updateCurrentErr } = await supabase
       .from('matches')
@@ -409,8 +425,14 @@ export async function getMatchByIdAction(matchId: string): Promise<{
         blue_athlete_id,
         next_match_id,
         next_match_slot,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         current_match_time_seconds,
         category:categories (
           id,

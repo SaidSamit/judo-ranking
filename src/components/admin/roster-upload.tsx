@@ -100,8 +100,59 @@ interface CategorySummary {
 interface RosterUploadProps {
   organizationId?: string;
   tournamentId?: string;
-  tournamentCategories?: { id: string; name: string }[];
+  tournamentCategories?: { id: string; name: string; gender?: string; age_group?: string }[];
   onRegistrationsConfirmed?: (count: number) => void;
+}
+
+/**
+ * Filtra las categorías creadas en el torneo verificando que el judoka
+ * sea reglamentariamente elegible para inscribirse (por edad y género).
+ */
+export function getEligibleTournamentCategoriesForAthlete(
+  categories: { id: string; name: string; gender?: string; age_group?: string }[] = [],
+  birthYear: number | undefined,
+  gender: 'M' | 'F',
+  currentYear: number
+) {
+  if (!categories || categories.length === 0) return [];
+  if (!birthYear || typeof birthYear !== 'number' || isNaN(birthYear)) {
+    return categories;
+  }
+
+  const availableDiv = getAvailableCategoriesForAthlete(birthYear, gender, currentYear);
+  const allEligibleNames = [
+    ...availableDiv.categories,
+    ...availableDiv.upperCategories,
+  ].map((n) => n.toLowerCase().trim());
+
+  return categories.filter((c) => {
+    // 1. Filtrar por género si está definido en la categoría
+    const catGender = (c.gender || '').toUpperCase();
+    if (catGender === 'M' && gender !== 'M') return false;
+    if (catGender === 'F' && gender !== 'F') return false;
+
+    // 2. Verificar coincidencia directa con categorías elegibles
+    const catNameLower = c.name.toLowerCase().trim();
+    if (allEligibleNames.some((en) => en === catNameLower)) return true;
+
+    // 3. Descartar si el nombre explicita el género contrario
+    const oppositeGenderPattern =
+      gender === 'M'
+        ? /(femenin|damas|mujeres|\bfem\b)/i
+        : /(masculin|varones|hombres|\bmasc\b)/i;
+    if (oppositeGenderPattern.test(catNameLower)) return false;
+
+    // 4. Verificar si pertenece a su división o a una división superior permitida
+    const athleteDiv = (availableDiv.divisionName || '').toLowerCase().trim();
+    const upperDivs = availableDiv.upperCategories.map((u) =>
+      u.split(' ')[0].toLowerCase().trim()
+    );
+
+    const isCurrentDiv = Boolean(athleteDiv && catNameLower.includes(athleteDiv));
+    const isUpperDiv = upperDivs.some((ud) => Boolean(ud && catNameLower.includes(ud)));
+
+    return isCurrentDiv || isUpperDiv;
+  });
 }
 
 export function RosterUpload({
@@ -149,16 +200,37 @@ export function RosterUpload({
     return getAvailableCategoriesForAthlete(formBirthYear, formGender, currentYear);
   }, [formBirthYear, formGender, currentYear]);
 
+  // Filtrar categorías del torneo para mostrar solo las que el judoka puede inscribirse
+  const eligibleTournamentCategories = useMemo(() => {
+    return getEligibleTournamentCategoriesForAthlete(
+      tournamentCategories,
+      typeof formBirthYear === 'number' ? formBirthYear : undefined,
+      formGender,
+      currentYear
+    );
+  }, [tournamentCategories, formBirthYear, formGender, currentYear]);
+
   // Sincronizar automáticamente la categoría seleccionada cuando cambian las opciones disponibles
   useEffect(() => {
-    if (availableDivInfo.categories.length > 0) {
-      if (!availableDivInfo.categories.includes(formCategory)) {
-        setFormCategory(availableDivInfo.categories[0]);
+    const allEligible = [
+      ...availableDivInfo.categories,
+      ...availableDivInfo.upperCategories,
+      ...eligibleTournamentCategories.map((c) => c.name),
+    ];
+
+    if (allEligible.length > 0) {
+      if (!allEligible.includes(formCategory)) {
+        setFormCategory(availableDivInfo.categories[0] || allEligible[0]);
       }
     } else {
       setFormCategory('');
     }
-  }, [availableDivInfo.categories, formCategory]);
+  }, [
+    availableDivInfo.categories,
+    availableDivInfo.upperCategories,
+    eligibleTournamentCategories,
+    formCategory,
+  ]);
 
   // ============================================================================
   // ACCIÓN 1: AGREGAR ATLETA MANUALMENTE AL BORRADOR
@@ -714,7 +786,7 @@ export function RosterUpload({
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs font-bold text-slate-300 flex items-center space-x-1">
                   <Layers className="w-3.5 h-3.5 text-slate-400" />
-                  <span>Categorías Oficiales</span>
+                  <span>Categorías Disponibles</span>
                   <span className="text-red-400">*</span>
                 </label>
                 {availableDivInfo.divisionName && (
@@ -739,9 +811,9 @@ export function RosterUpload({
                     <option value="">Ingresa el año de nacimiento...</option>
                   ) : (
                     <>
-                      {/* Categorías oficiales de su división */}
+                      {/* Categorías de su división */}
                       {availableDivInfo.categories.length > 0 && (
-                        <optgroup label={`División ${availableDivInfo.divisionName || 'Oficial'}`}>
+                        <optgroup label={`División ${availableDivInfo.divisionName || 'Elegible'}`}>
                           {availableDivInfo.categories.map((cat) => (
                             <option key={cat} value={cat}>
                               {cat}
@@ -761,10 +833,10 @@ export function RosterUpload({
                         </optgroup>
                       )}
 
-                      {/* Categorías creadas en el torneo (incluyendo las creadas posteriormente) */}
-                      {tournamentCategories && tournamentCategories.length > 0 && (
+                      {/* Categorías creadas en el torneo (filtradas según elegibilidad oficial) */}
+                      {eligibleTournamentCategories.length > 0 && (
                         <optgroup label="🏆 Categorías Creadas en este Campeonato">
-                          {tournamentCategories.map((c) => (
+                          {eligibleTournamentCategories.map((c) => (
                             <option key={`tour-${c.id}`} value={c.name}>
                               {c.name}
                             </option>
@@ -881,7 +953,7 @@ export function RosterUpload({
                   <th className="px-4 py-3">Club / Escuela</th>
                   <th className="px-4 py-3">Año (Edad)</th>
                   <th className="px-4 py-3">Género</th>
-                  <th className="px-4 py-3">Categoría Oficial</th>
+                  <th className="px-4 py-3">Categoría Asignada</th>
                   <th className="px-4 py-3 text-right">Acciones</th>
                 </tr>
               </thead>
@@ -892,6 +964,13 @@ export function RosterUpload({
                   if (isEditing && editForm) {
                     // FILA EN MODO EDICIÓN
                     const editAvailable = getAvailableCategoriesForAthlete(
+                      editForm.birth_year,
+                      editForm.gender,
+                      currentYear
+                    );
+
+                    const editEligibleTournamentCategories = getEligibleTournamentCategoriesForAthlete(
+                      tournamentCategories,
                       editForm.birth_year,
                       editForm.gender,
                       currentYear
@@ -983,7 +1062,7 @@ export function RosterUpload({
                                 </option>
                               )}
                             {editAvailable.categories.length > 0 && (
-                              <optgroup label={`División ${editAvailable.divisionName || 'Oficial'}`}>
+                              <optgroup label={`División ${editAvailable.divisionName || 'Elegible'}`}>
                                 {editAvailable.categories.map((c) => (
                                   <option key={c} value={c}>
                                     {c}
@@ -1000,9 +1079,9 @@ export function RosterUpload({
                                 ))}
                               </optgroup>
                             )}
-                            {tournamentCategories && tournamentCategories.length > 0 && (
+                            {editEligibleTournamentCategories && editEligibleTournamentCategories.length > 0 && (
                               <optgroup label="🏆 Categorías Creadas en este Campeonato">
-                                {tournamentCategories.map((tc) => (
+                                {editEligibleTournamentCategories.map((tc) => (
                                   <option key={`edit-tour-${tc.id}`} value={tc.name}>
                                     {tc.name}
                                   </option>
@@ -1102,7 +1181,7 @@ export function RosterUpload({
       {categorySummaries.length > 0 && (
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
           <h3 className="text-sm font-bold text-slate-300 flex items-center space-x-2">
-            <span>Diagnóstico de Llaves en Borrador (Reglamento Oficial)</span>
+            <span>Diagnóstico de Llaves en Borrador</span>
           </h3>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">

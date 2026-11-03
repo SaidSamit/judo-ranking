@@ -89,6 +89,7 @@ import {
   parseWeightLimitFromCategory,
   getWeightsForAgeDivision,
   getRecommendedDuration,
+  getAvailableCategoriesForAthlete,
   JUDO_AGE_DIVISIONS,
 } from '@/lib/rules/judo-categories';
 
@@ -379,6 +380,49 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     return counts;
   }, [registeredAthletes]);
 
+  /**
+   * Retorna las categorías del campeonato en las que este judoka SÍ puede inscribirse,
+   * respetando las reglas de edad y género IJF / FEJUChile.
+   */
+  const getEligibleAdditionalCategories = useCallback(
+    (athlete: RegisteredAthleteSummary) => {
+      const eligible = getAvailableCategoriesForAthlete(
+        athlete.birth_year,
+        athlete.gender,
+        new Date().getFullYear()
+      );
+      const allEligibleNames = [
+        ...eligible.categories,
+        ...eligible.upperCategories,
+      ].map((n) => n.toLowerCase().trim());
+
+      // IDs de categorías en que ya está inscrito este judoka
+      const alreadyRegisteredCatIds = new Set(
+        registeredAthletes
+          .filter((r) => r.athlete_id === athlete.athlete_id)
+          .map((r) => r.category_id)
+      );
+
+      return categories.filter((c) => {
+        if (alreadyRegisteredCatIds.has(c.id)) return false;
+        // Verificar género (si la categoría tiene datos de género)
+        const catGender = (c.gender || '').toUpperCase();
+        if (catGender === 'M' && athlete.gender !== 'M') return false;
+        if (catGender === 'F' && athlete.gender !== 'F') return false;
+        // Verificar elegibilidad por nombre de categoría
+        const catNameLower = c.name.toLowerCase().trim();
+        return (
+          allEligibleNames.some((en) => catNameLower === en) ||
+          allEligibleNames.some((en) => {
+            const divisionPart = en.split(' ')[0];
+            return catNameLower.startsWith(divisionPart);
+          })
+        );
+      });
+    },
+    [categories, registeredAthletes]
+  );
+
   // Disparar carga según la pestaña activa
   useEffect(() => {
     if (activeTab === 'roster') loadRoster();
@@ -419,7 +463,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       if (res.success) {
         setFeedback({
           type: 'success',
-          text: `Se inyectaron ${res.count} deportistas oficiales a este campeonato.`,
+          text: `Se inyectaron ${res.count} deportistas a este campeonato.`,
         });
         loadRoster();
         loadWeighIn();
@@ -477,7 +521,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
         setFeedback({
           type: valid ? 'success' : 'info',
           text: `Peso de ${athlete.name} guardado: ${weightNum} kg (${
-            valid ? 'PESO OFICIAL APROBADO' : 'PESO EXCEDIDO / DSQ'
+            valid ? 'PESO APROBADO' : 'PESO EXCEDIDO / DSQ'
           }).`,
         });
       } else {
@@ -678,6 +722,36 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }));
   }, [categories, tournament.tatami_count]);
 
+  // Medallero por Clubes calculado a partir de los resultados de podio
+  const clubMedalRanking = useMemo(() => {
+    const clubMap: Record<string, { club: string; gold: number; silver: number; bronze: number; total: number }> = {};
+
+    const registerMedal = (place: { club?: string } | null, type: 'gold' | 'silver' | 'bronze') => {
+      if (!place || !place.club || place.club === '—') return;
+      const clubName = place.club.trim();
+      if (!clubMap[clubName]) {
+        clubMap[clubName] = { club: clubName, gold: 0, silver: 0, bronze: 0, total: 0 };
+      }
+      clubMap[clubName][type] += 1;
+      clubMap[clubName].total += 1;
+    };
+
+    for (const pr of podiumResults) {
+      registerMedal(pr.podium.firstPlace, 'gold');
+      registerMedal(pr.podium.secondPlace, 'silver');
+      registerMedal(pr.podium.thirdPlaceA, 'bronze');
+      registerMedal(pr.podium.thirdPlaceB, 'bronze');
+    }
+
+    return Object.values(clubMap).sort((a, b) => {
+      if (b.gold !== a.gold) return b.gold - a.gold;
+      if (b.silver !== a.silver) return b.silver - a.silver;
+      if (b.bronze !== a.bronze) return b.bronze - a.bronze;
+      if (b.total !== a.total) return b.total - a.total;
+      return a.club.localeCompare(b.club);
+    });
+  }, [podiumResults]);
+
   // ==========================================================================
   // MANEJADORES DE CREDENCIALES
   // ==========================================================================
@@ -691,7 +765,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const handleCopyAll = () => {
     if (credentials.length === 0) return;
     let text = `=========================================\n`;
-    text += `CREDENCIALES OFICIALES DE TORNEO (PIN)\n`;
+    text += `CREDENCIALES DE TORNEO (PIN)\n`;
     text += `Torneo: ${tournament.name}\n`;
     text += `Sede: ${tournament.location || 'Polideportivo'}\n`;
     text += `Fecha: ${tournament.start_date}\n`;
@@ -795,13 +869,13 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                   : 'bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 border border-slate-700'
               }`}
-              title="Inyecta o actualiza la nómina oficial de prueba de 8 deportistas y 4 categorías"
+              title="Inyecta o actualiza una nómina de prueba para probar todos los formatos de sorteo"
             >
               <Sparkles className="w-4 h-4 text-emerald-400" />
               <span>
                 {registeredAthletes.length === 0
-                  ? 'Inyectar Nómina Base (8 Atletas)'
-                  : 'Re-inyectar Nómina Base'}
+                  ? 'Inyectar Nómina de Prueba'
+                  : 'Re-inyectar Nómina de Prueba'}
               </span>
             </button>
           </div>
@@ -968,7 +1042,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               <div className="flex items-center space-x-2">
                 <Users className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-sm font-black text-white uppercase tracking-wider">
-                  Atletas Confirmados en este Campeonato ({registeredAthletes.length})
+                  Judokas Confirmados en este Campeonato ({registeredAthletes.length})
                 </h3>
               </div>
 
@@ -1003,7 +1077,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 </p>
                 <p className="text-xs max-w-md mx-auto">
                   Usa el formulario inferior para agregar atletas individualmente, importa un archivo
-                  CSV, o presiona "Inyectar Nómina Base" arriba para pruebas rápidas.
+                  CSV, o presiona "Inyectar Nómina de Prueba" arriba para pruebas rápidas.
                 </p>
               </div>
             ) : (
@@ -1015,7 +1089,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                       <th className="p-3">Nombre Completo</th>
                       <th className="p-3">Club</th>
                       <th className="p-3">Año / Sexo</th>
-                      <th className="p-3">Categoría Oficial</th>
+                      <th className="p-3">Categoría Asignada</th>
                       <th className="p-3 text-center">Estado Pesaje</th>
                       <th className="p-3 text-right">Peso Real</th>
                       <th className="p-3 text-right">Acción</th>
@@ -1041,14 +1115,26 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                             {ath.birth_year} ({ath.gender === 'M' ? 'Masc' : 'Fem'})
                           </td>
                           <td className="p-3">
-                            <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
-                              <span className="px-2 py-0.5 rounded-lg bg-blue-950/80 text-blue-300 border border-blue-800/80 text-[11px] font-bold">
+                            <div className="flex flex-col gap-1">
+                              <span className="px-2 py-0.5 rounded-lg bg-blue-950/80 text-blue-300 border border-blue-800/80 text-[11px] font-bold self-start">
                                 {ath.category_name}
                               </span>
                               {(athleteRegistrationCounts.get(ath.athlete_id) || 0) > 1 && (
-                                <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold">
-                                  2+ Categorías
-                                </span>
+                                <>
+                                  {registeredAthletes
+                                    .filter((r) => r.athlete_id === ath.athlete_id && r.id !== ath.id)
+                                    .map((r) => (
+                                      <span
+                                        key={r.id}
+                                        className="px-2 py-0.5 rounded-lg bg-amber-950/70 text-amber-300 border border-amber-700/60 text-[10px] font-bold self-start"
+                                      >
+                                        + {r.category_name}
+                                      </span>
+                                    ))}
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold self-start">
+                                    {athleteRegistrationCounts.get(ath.athlete_id)} Categorías
+                                  </span>
+                                </>
                               )}
                             </div>
                           </td>
@@ -1136,7 +1222,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               <div>
                 <h2 className="text-lg font-black text-white flex items-center space-x-2">
                   <Scale className="w-5 h-5 text-amber-400" />
-                  <span>Estación de Pesaje Oficial - {tournament.name}</span>
+                  <span>Estación de Pesaje - {tournament.name}</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Registra el peso en báscula. Si el atleta excede su división, el sistema sugerirá la
@@ -1202,7 +1288,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                     <tr>
                       <th className="p-3">Atleta</th>
                       <th className="p-3">Categoría Asignada</th>
-                      <th className="p-3">Límite Oficial</th>
+                      <th className="p-3">Límite de Peso</th>
                       <th className="p-3 text-center">Peso Real (kg)</th>
                       <th className="p-3 text-center">Estado</th>
                       <th className="p-3 text-right">Acción</th>
@@ -1328,7 +1414,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   <span>Sorteo y Visor de Llaves - {tournament.name}</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Genera las llaves oficiales según el pesaje cerrado. Modifica cruces o visualiza el
+                  Genera las llaves y cruces según el pesaje cerrado. Modifica cruces o visualiza el
                   árbol de eliminación / Round Robin.
                 </p>
               </div>
@@ -1402,7 +1488,11 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
                           Tatami {cat.assigned_tatami_number}
                         </span>
-                        {cat.matches_generated ? (
+                        {cat.bracket_type === 'UNCONTESTED' ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-950 text-amber-300 border border-amber-800">
+                            Campeón Directo
+                          </span>
+                        ) : cat.matches_generated ? (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
                             Generada
                           </span>
@@ -1428,6 +1518,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                             ? 'Berger (RR)'
                             : cat.bracket_type === 'BEST_OF_3'
                             ? 'Best of 3'
+                            : cat.bracket_type === 'UNCONTESTED'
+                            ? 'Campeón Directo'
                             : 'Eliminación'}
                         </span>
                       </div>
@@ -1479,6 +1571,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                         ? 'Todos contra Todos (Round Robin Berger)'
                         : activeCategory.bracket_type === 'BEST_OF_3'
                         ? 'Al Mejor de 3'
+                        : activeCategory.bracket_type === 'UNCONTESTED'
+                        ? 'Campeón Directo (Sin Contendor)'
                         : 'Eliminación Simple'}
                     </strong>
                   </p>
@@ -1488,9 +1582,9 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   <button
                     type="button"
                     onClick={() => handleGenerateBracket(activeCategory)}
-                    disabled={isGeneratingBrackets || activeCategory.passed_weigh_in < 2}
+                    disabled={isGeneratingBrackets || activeCategory.passed_weigh_in < 1}
                     className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition shadow-lg flex items-center space-x-2 ${
-                      activeCategory.passed_weigh_in < 2
+                      activeCategory.passed_weigh_in < 1
                         ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
                         : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
                     }`}
@@ -1501,6 +1595,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                         ? 'Generando...'
                         : activeCategory.matches_generated
                         ? 'Regenerar Llave'
+                        : activeCategory.passed_weigh_in === 1
+                        ? 'Declarar Campeón'
                         : 'Generar Llave'}
                     </span>
                   </button>
@@ -1528,11 +1624,13 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   <p className="text-sm font-bold text-white">
                     {activeCategory.matches_generated
                       ? 'Cargando visualización del sorteo...'
-                      : 'Presiona "Generar Llave" para estructurar los cruces oficiales de esta categoría.'}
+                      : activeCategory.passed_weigh_in === 1
+                      ? 'Presiona "Declarar Campeón" para proclamar al único competidor de esta categoría.'
+                      : 'Presiona "Generar Llave" para estructurar los cruces de esta categoría.'}
                   </p>
                   <p className="text-xs text-slate-500 max-w-md mx-auto">
-                    El motor matemático respetará las reglas oficiales: si hay 2 competidores se
-                    disputará al Mejor de 3, entre 3 y 5 se generará Round Robin (Berger), y para 6 o más
+                    El sistema aplicará las reglas del sorteo: con 1 competidor se proclama campeón directo,
+                    con 2 competidores se disputará al Mejor de 3, entre 3 y 5 se generará Round Robin (Berger), y para 6 o más
                     se dibujará el árbol de eliminación directa.
                   </p>
                 </div>
@@ -1580,7 +1678,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow-lg"
                 >
                   <Printer className="w-3.5 h-3.5" />
-                  <span>Imprimir Fichas Oficiales</span>
+                  <span>Imprimir Fichas de Mesa</span>
                 </button>
               </div>
             </div>
@@ -1675,7 +1773,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       )}
 
       {/* ==================================================================== */}
-      {/* PESTAÑA 6: RESULTADOS Y PODIO OFICIAL                                */}
+      {/* PESTAÑA 6: RESULTADOS Y PODIO                                        */}
       {/* ==================================================================== */}
       {activeTab === 'results' && (
         <div className="space-y-6">
@@ -1684,7 +1782,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               <div>
                 <h2 className="text-lg font-black text-white flex items-center space-x-2">
                   <Trophy className="w-5 h-5 text-amber-400" />
-                  <span>Resultados Oficiales y Podios - {tournament.name}</span>
+                  <span>Resultados y Podios - {tournament.name}</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Cuadro de honor con 1° (Oro), 2° (Plata), 3° (Doble Bronce olímpico), 5° y 7° lugar por categoría.
@@ -1701,6 +1799,66 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 <span>Actualizar Podios</span>
               </button>
             </div>
+
+            {/* MEDALLERO POR CLUBES */}
+            {podiumResults.length > 0 && (
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
+                  <h3 className="text-sm font-black uppercase tracking-wider text-amber-400 flex items-center space-x-2">
+                    <Trophy className="w-4 h-4 text-amber-400" />
+                    <span>Medallero por Clubes</span>
+                  </h3>
+                  <span className="text-xs text-slate-400 font-mono">
+                    {clubMedalRanking.length} {clubMedalRanking.length === 1 ? 'club' : 'clubes'}
+                  </span>
+                </div>
+
+                {clubMedalRanking.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-3 text-center">
+                    Las medallas se computarán automáticamente a medida que finalicen las categorías o se proclamen campeones.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-[11px] font-black uppercase text-slate-400">
+                          <th className="py-2.5 px-3 text-center w-12">#</th>
+                          <th className="py-2.5 px-3">Club / Institución</th>
+                          <th className="py-2.5 px-3 text-center w-24 text-amber-400">🥇 Oro</th>
+                          <th className="py-2.5 px-3 text-center w-24 text-slate-300">🥈 Plata</th>
+                          <th className="py-2.5 px-3 text-center w-24 text-orange-400">🥉 Bronce</th>
+                          <th className="py-2.5 px-3 text-center w-24 text-emerald-400 font-bold">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/50">
+                        {clubMedalRanking.map((row, idx) => (
+                          <tr key={row.club} className="hover:bg-slate-900/60 transition">
+                            <td className="py-2 px-3 text-center font-mono font-bold text-slate-400">
+                              {idx === 0 ? '🏆 1' : `${idx + 1}°`}
+                            </td>
+                            <td className="py-2 px-3 font-bold text-white">
+                              {row.club}
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono font-bold text-amber-400 bg-amber-500/5">
+                              {row.gold}
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono font-bold text-slate-300 bg-slate-400/5">
+                              {row.silver}
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono font-bold text-orange-400 bg-orange-600/5">
+                              {row.bronze}
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono font-black text-emerald-400 bg-emerald-500/5">
+                              {row.total}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
 
             {podiumResults.length === 0 ? (
               <div className="p-12 text-center text-slate-500 space-y-2">
@@ -1733,7 +1891,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                       </span>
                     </div>
 
-                    {/* MEDALLERO OFICIAL */}
+                    {/* CUADRO DE HONOR Y MEDALLAS */}
                     <div className="space-y-2">
                       {/* 1° Lugar (Oro) */}
                       <div className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30">
@@ -1964,18 +2122,26 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                   onChange={(e) => setAdditionalTargetCatId(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-400"
                 >
-                  <optgroup label="Categorías del Campeonato">
-                    {categories.map((c) => {
-                      const isSame = c.id === additionalCatAthlete.category_id;
-                      return (
-                        <option key={c.id} value={c.id} disabled={isSame}>
-                          {c.name} {isSame ? '(Ya inscrito)' : `(Tatami #${c.assigned_tatami_number || 1})`}
+                  {(() => {
+                    const eligible = getEligibleAdditionalCategories(additionalCatAthlete);
+                    return eligible.length > 0 ? (
+                      <optgroup label="Categorías Elegibles del Campeonato">
+                        {eligible.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} (Tatami #{c.assigned_tatami_number || 1})
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : (
+                      <optgroup label="Categorías Elegibles del Campeonato">
+                        <option value="" disabled>
+                          No hay categorías elegibles disponibles para este judoka
                         </option>
-                      );
-                    })}
-                  </optgroup>
+                      </optgroup>
+                    );
+                  })()}
                   <optgroup label="Otras Opciones">
-                    <option value="__custom__">➕ Escribir o crear otra categoría oficial...</option>
+                    <option value="__custom__">➕ Escribir o crear otra categoría...</option>
                   </optgroup>
                 </select>
 
@@ -1995,7 +2161,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
                 )}
 
                 <p className="text-[11px] text-slate-400 mt-2">
-                  Permite al atleta competir en dos categorías (por ejemplo, Sub-15 y Cadetes Sub-18) según la normativa chilena e internacional.
+                  Solo se muestran categorías en las que este judoka puede competir según su edad y género (reglamento IJF / FEJUChile). Permite competir en dos categorías, por ejemplo Sub-15 y Cadetes Sub-18.
                 </p>
               </div>
             </div>
@@ -2120,7 +2286,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-300 block mb-1">
-                    Peso Oficial (Desplegable)
+                    Peso Límite (Desplegable)
                   </label>
                   <select
                     value={newCatWeight}
@@ -2199,13 +2365,13 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       </div>
 
       {/* ==================================================================== */}
-      {/* VISTA DE IMPRESIÓN EXCLUSIVA: FICHAS OFICIALES DE MESAS DE CONTROL   */}
+      {/* VISTA DE IMPRESIÓN EXCLUSIVA: FICHAS DE MESAS DE CONTROL             */}
       {/* ==================================================================== */}
       <div className="hidden print:block print:w-full print:bg-white text-black font-sans p-6">
         <div className="border-b-2 border-black pb-4 mb-6 flex justify-between items-end">
           <div>
             <span className="text-xs uppercase font-black tracking-widest text-gray-500 block">
-              SISTEMA OFICIAL DE COMPETICIÓN DE JUDO
+              SISTEMA DE COMPETICIÓN DE JUDO
             </span>
             <h1 className="text-2xl font-black uppercase text-black tracking-tight mt-0.5">
               {tournament.name}

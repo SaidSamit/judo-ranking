@@ -235,14 +235,18 @@ export function BracketViewer({
             </h3>
             <span
               className={`text-xs px-2.5 py-0.5 rounded-full font-mono font-bold uppercase ${
-                bracket_type === 'BEST_OF_3'
+                bracket_type === 'UNCONTESTED'
+                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                  : bracket_type === 'BEST_OF_3'
                   ? 'bg-purple-950 text-purple-300 border border-purple-800'
                   : bracket_type === 'ROUND_ROBIN'
                   ? 'bg-amber-950 text-amber-300 border border-amber-800'
                   : 'bg-blue-950 text-blue-300 border border-blue-800'
               }`}
             >
-              {bracket_type === 'BEST_OF_3'
+              {bracket_type === 'UNCONTESTED'
+                ? 'Campeón Directo'
+                : bracket_type === 'BEST_OF_3'
                 ? 'Al Mejor de 3'
                 : bracket_type === 'ROUND_ROBIN'
                 ? 'Round Robin'
@@ -259,41 +263,43 @@ export function BracketViewer({
         </div>
 
         {/* BOTONES DE MODO MODIFICABLE (REQUERIMIENTO: VISUAL Y MODIFICABLE) */}
-        <div className="flex items-center space-x-2">
-          {!isEditMode ? (
-            <button
-              type="button"
-              onClick={() => setIsEditMode(true)}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
-              title="Permite intercambiar atletas de posición en la llave"
-            >
-              <ArrowLeftRight className="w-3.5 h-3.5" />
-              <span>Modificar Cruces</span>
-            </button>
-          ) : (
-            <div className="flex items-center space-x-2">
+        {bracket_type !== 'UNCONTESTED' && (
+          <div className="flex items-center space-x-2">
+            {!isEditMode ? (
               <button
                 type="button"
-                onClick={handleSaveModifications}
-                disabled={isSaving}
-                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                onClick={() => setIsEditMode(true)}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                title="Permite intercambiar atletas de posición en la llave"
               >
-                <Save className="w-3.5 h-3.5" />
-                <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
+                <ArrowLeftRight className="w-3.5 h-3.5" />
+                <span>Modificar Cruces</span>
               </button>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={handleSaveModifications}
+                  disabled={isSaving}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleResetModifications}
-                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold transition flex items-center space-x-1"
-                title="Deshacer cambios y volver al sorteo original"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Cancelar</span>
-              </button>
-            </div>
-          )}
-        </div>
+                <button
+                  type="button"
+                  onClick={handleResetModifications}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold transition flex items-center space-x-1"
+                  title="Deshacer cambios y volver al sorteo original"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Cancelar</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* BANNER DE INSTRUCCIONES DE EDICIÓN O FEEDBACK */}
@@ -436,6 +442,29 @@ export function BracketViewer({
               />
             </div>
           ))}
+        </div>
+      )}
+
+      {/* CASO 4: CATEGORÍA DE 1 COMPETIDOR (CAMPEÓN DIRECTO SIN CONTENDOR) */}
+      {bracket_type === 'UNCONTESTED' && (
+        <div className="bg-slate-950/80 border border-emerald-500/40 rounded-2xl p-6 max-w-xl mx-auto text-center space-y-4 shadow-xl">
+          <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center mx-auto shadow-lg">
+            <Trophy className="w-8 h-8" />
+          </div>
+          <div className="space-y-1">
+            <span className="text-xs uppercase font-mono font-black text-amber-400 tracking-wider">
+              1° Lugar • Medalla de Oro
+            </span>
+            <h4 className="text-xl font-black text-white">
+              {matches[0]?.white_athlete_name || 'Competidor'}
+            </h4>
+            <p className="text-xs text-slate-400 font-medium">
+              {matches[0]?.white_club_name || 'Club'}
+            </p>
+          </div>
+          <div className="p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-xl text-xs text-emerald-300">
+            Único competidor presentado en la categoría. Campeón declarado automáticamente sin contendor.
+          </div>
         </div>
       )}
     </div>
