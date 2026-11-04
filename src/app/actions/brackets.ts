@@ -27,7 +27,7 @@ export interface CategoryBracketStatus {
   dsq_count: number;
   is_weigh_in_closed: boolean;
   matches_generated: boolean;
-  bracket_type?: 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION' | 'UNCONTESTED' | 'INSUFFICIENT';
+  bracket_type?: 'BEST_OF_3' | 'ROUND_ROBIN' | 'DOUBLE_POOL_5' | 'SINGLE_ELIMINATION' | 'UNCONTESTED' | 'INSUFFICIENT';
 }
 
 /**
@@ -162,7 +162,8 @@ export async function getTournamentCategoriesStatusAction(
       if (passed === 0) bracketType = 'INSUFFICIENT';
       else if (passed === 1) bracketType = 'UNCONTESTED';
       else if (passed === 2) bracketType = 'BEST_OF_3';
-      else if (passed >= 3 && passed <= 5) bracketType = 'ROUND_ROBIN';
+      else if (passed >= 3 && passed <= 4) bracketType = 'ROUND_ROBIN';
+      else if (passed === 5) bracketType = 'DOUBLE_POOL_5';
       else bracketType = 'SINGLE_ELIMINATION';
 
       return {
@@ -198,6 +199,7 @@ export async function generateCategoryMatchesAction(params: {
   tatamiNumber?: number;
   tournamentId?: string;
   organizationId?: string;
+  preferredFormat5?: 'ROUND_ROBIN' | 'DOUBLE_POOL_5';
 }): Promise<{
   success: boolean;
   result?: BracketResult;
@@ -211,6 +213,7 @@ export async function generateCategoryMatchesAction(params: {
       tatamiNumber = 1,
       tournamentId = 'e0000000-0000-0000-0000-000000000001',
       organizationId = 'a0000000-0000-0000-0000-000000000001',
+      preferredFormat5 = 'DOUBLE_POOL_5',
     } = params;
 
     // 1. Obtener la categoría y su contexto relacional
@@ -286,6 +289,7 @@ export async function generateCategoryMatchesAction(params: {
       tatami_number: assignedTatami,
       match_duration_seconds: category.match_duration_seconds || 240,
       start_match_number: startMatchNumber,
+      preferred_format_5: preferredFormat5,
     });
 
     // 5. Borrar combates previos de esta categoría en este torneo
@@ -308,9 +312,10 @@ export async function generateCategoryMatchesAction(params: {
       round: m.round || 'R1',
       white_athlete_id: m.white_athlete_id || null,
       blue_athlete_id: m.blue_athlete_id || null,
+      winner_id: m.winner_id || null,
       next_match_id: m.next_match_id || null,
       next_match_slot: m.next_match_slot || null,
-      status: (m.status || 'PENDING') as 'PENDING',
+      status: m.status || 'PENDING',
       // Columnas planas de puntaje (esquema real de Supabase)
       white_ippon: 0,
       white_wazaari: 0,
@@ -431,17 +436,26 @@ export async function getCategoryBracketAction(
       bracketType = 'BEST_OF_3';
     } else if (firstRound.startsWith('RR_')) {
       bracketType = 'ROUND_ROBIN';
+    } else if (firstRound.startsWith('DP_') || matches.some((m: any) => (m.round || '').startsWith('DP_'))) {
+      bracketType = 'DOUBLE_POOL_5';
     }
 
     const mappedMatches: GeneratedMatch[] = matches.map((m: any) => {
       const whiteAth = Array.isArray(m.white_athlete) ? m.white_athlete[0] : m.white_athlete;
       const blueAth = Array.isArray(m.blue_athlete) ? m.blue_athlete[0] : m.blue_athlete;
 
+      // Si el combate es un BYE, la casilla vacía se muestra como '—'
+      const isBye = m.status === 'FINISHED' && (!m.white_athlete_id || !m.blue_athlete_id);
+
       const whiteName = whiteAth
         ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
+        : isBye && !m.white_athlete_id
+        ? '—'
         : 'Por definir';
       const blueName = blueAth
         ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
+        : isBye && !m.blue_athlete_id
+        ? '—'
         : 'Por definir';
 
       const whiteClub =
@@ -1483,56 +1497,97 @@ export async function getTournamentPodiumsAction(
       const fifthPlaces: { athleteId: string; name: string; club: string }[] = [];
       const seventhPlaces: { athleteId: string; name: string; club: string }[] = [];
 
-      // A. Comprobar si es Best of 3 o Eliminación simple
-      const finalMatch = catMatches.find((m: any) => m.round === 'FINAL' || m.round.includes('FINAL'));
-      const bo3Matches = catMatches.filter((m: any) => m.round.startsWith('BEST_OF_3'));
-
-      if (finalMatch && finalMatch.winner_id) {
-        const champ = athleteCache.get(finalMatch.winner_id);
-        if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
-
-        const runnerUpId = finalMatch.winner_id === finalMatch.white_athlete_id ? finalMatch.blue_athlete_id : finalMatch.white_athlete_id;
-        if (runnerUpId) {
-          const runnerUp = athleteCache.get(runnerUpId);
-          if (runnerUp) secondPlace = { athleteId: runnerUp.id, name: runnerUp.name, club: runnerUp.club };
+      // A. Categoría Sin Contendor (1 competidor)
+      if (catMatches.length === 1 && !catMatches[0].blue_athlete_id) {
+        const m = catMatches[0];
+        const champId = m.winner_id || m.white_athlete_id;
+        if (champId) {
+          const champ = athleteCache.get(champId);
+          if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
         }
-      } else if (bo3Matches.length > 0) {
-        const bo3Wins = new Map<string, number>();
-        bo3Matches.forEach((m: any) => {
-          if (m.winner_id) bo3Wins.set(m.winner_id, (bo3Wins.get(m.winner_id) || 0) + 1);
-        });
-        for (const [athId, wins] of bo3Wins.entries()) {
-          if (wins >= 2) {
-            const champ = athleteCache.get(athId);
-            if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
-          }
-        }
-        if (firstPlace) {
-          const m1 = bo3Matches[0];
-          const runnerUpId = m1?.white_athlete_id === firstPlace.athleteId ? m1?.blue_athlete_id : m1?.white_athlete_id;
+        secondPlace = null;
+        thirdPlaceA = null;
+        thirdPlaceB = null;
+      } else if (catMatches.some((m: any) => (m.round || '').startsWith('DP_'))) {
+        // Modalidad Pool Doble (5 competidores IJF)
+        const dpFinal = catMatches.find((m: any) => m.round === 'DP_FINAL');
+        const dpBronze = catMatches.find((m: any) => m.round === 'DP_BRONZE');
+
+        if (dpFinal && dpFinal.winner_id) {
+          const champ = athleteCache.get(dpFinal.winner_id);
+          if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
+
+          const runnerUpId =
+            dpFinal.winner_id === dpFinal.white_athlete_id ? dpFinal.blue_athlete_id : dpFinal.white_athlete_id;
           if (runnerUpId) {
-            const ru = athleteCache.get(runnerUpId);
-            if (ru) secondPlace = { athleteId: ru.id, name: ru.name, club: ru.club };
+            const runnerUp = athleteCache.get(runnerUpId);
+            if (runnerUp) secondPlace = { athleteId: runnerUp.id, name: runnerUp.name, club: runnerUp.club };
           }
         }
-      } else if (catMatches.some((m: any) => m.round.startsWith('RR_'))) {
-        // En Round Robin (Liga), ordenar por victorias
-        const rrWins = new Map<string, number>();
-        catMatches.forEach((m: any) => {
-          if (m.winner_id) rrWins.set(m.winner_id, (rrWins.get(m.winner_id) || 0) + 1);
-        });
-        const sorted = Array.from(rrWins.entries()).sort((a, b) => b[1] - a[1]);
-        if (sorted[0]) {
-          const a = athleteCache.get(sorted[0][0]);
-          if (a) firstPlace = { athleteId: a.id, name: a.name, club: a.club };
+
+        if (dpBronze && dpBronze.winner_id) {
+          const bAth = athleteCache.get(dpBronze.winner_id);
+          if (bAth) thirdPlaceA = { athleteId: bAth.id, name: bAth.name, club: bAth.club };
+
+          const fifthId =
+            dpBronze.winner_id === dpBronze.white_athlete_id ? dpBronze.blue_athlete_id : dpBronze.white_athlete_id;
+          if (fifthId) {
+            const fAth = athleteCache.get(fifthId);
+            if (fAth) fifthPlaces.push({ athleteId: fAth.id, name: fAth.name, club: fAth.club });
+          }
         }
-        if (sorted[1]) {
-          const a = athleteCache.get(sorted[1][0]);
-          if (a) secondPlace = { athleteId: a.id, name: a.name, club: a.club };
-        }
-        if (sorted[2]) {
-          const a = athleteCache.get(sorted[2][0]);
-          if (a) thirdPlaceA = { athleteId: a.id, name: a.name, club: a.club };
+      } else {
+        // B. Comprobar si es Best of 3 o Eliminación simple
+        const finalMatch = catMatches.find((m: any) => m.round === 'FINAL' || m.round.includes('FINAL'));
+        const bo3Matches = catMatches.filter((m: any) => m.round.startsWith('BEST_OF_3'));
+
+        if (finalMatch && finalMatch.winner_id) {
+          const champ = athleteCache.get(finalMatch.winner_id);
+          if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
+
+          const runnerUpId = finalMatch.winner_id === finalMatch.white_athlete_id ? finalMatch.blue_athlete_id : finalMatch.white_athlete_id;
+          if (runnerUpId) {
+            const runnerUp = athleteCache.get(runnerUpId);
+            if (runnerUp) secondPlace = { athleteId: runnerUp.id, name: runnerUp.name, club: runnerUp.club };
+          }
+        } else if (bo3Matches.length > 0) {
+          const bo3Wins = new Map<string, number>();
+          bo3Matches.forEach((m: any) => {
+            if (m.winner_id) bo3Wins.set(m.winner_id, (bo3Wins.get(m.winner_id) || 0) + 1);
+          });
+          for (const [athId, wins] of bo3Wins.entries()) {
+            if (wins >= 2) {
+              const champ = athleteCache.get(athId);
+              if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
+            }
+          }
+          if (firstPlace) {
+            const m1 = bo3Matches[0];
+            const runnerUpId = m1?.white_athlete_id === firstPlace.athleteId ? m1?.blue_athlete_id : m1?.white_athlete_id;
+            if (runnerUpId) {
+              const ru = athleteCache.get(runnerUpId);
+              if (ru) secondPlace = { athleteId: ru.id, name: ru.name, club: ru.club };
+            }
+          }
+        } else if (catMatches.some((m: any) => m.round.startsWith('RR_'))) {
+          // En Round Robin (Liga), ordenar por victorias
+          const rrWins = new Map<string, number>();
+          catMatches.forEach((m: any) => {
+            if (m.winner_id) rrWins.set(m.winner_id, (rrWins.get(m.winner_id) || 0) + 1);
+          });
+          const sorted = Array.from(rrWins.entries()).sort((a, b) => b[1] - a[1]);
+          if (sorted[0]) {
+            const a = athleteCache.get(sorted[0][0]);
+            if (a) firstPlace = { athleteId: a.id, name: a.name, club: a.club };
+          }
+          if (sorted[1]) {
+            const a = athleteCache.get(sorted[1][0]);
+            if (a) secondPlace = { athleteId: a.id, name: a.name, club: a.club };
+          }
+          if (sorted[2]) {
+            const a = athleteCache.get(sorted[2][0]);
+            if (a) thirdPlaceA = { athleteId: a.id, name: a.name, club: a.club };
+          }
         }
       }
 

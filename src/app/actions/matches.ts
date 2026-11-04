@@ -221,7 +221,7 @@ export async function finishMatchAndPropagateWinnerAction(
     const catId = rawMatch?.category_id;
     const roundCode = (rawMatch?.round || '').toUpperCase();
 
-    if (loserId && catId && (roundCode === 'QF' || roundCode.startsWith('QF') || roundCode === 'SF' || roundCode.startsWith('SF'))) {
+    if (loserId && catId && (roundCode === 'QF' || roundCode.startsWith('QF') || roundCode === 'SF' || roundCode.startsWith('SF') || roundCode === 'DP_SEMI')) {
       try {
         if (roundCode === 'QF' || roundCode.startsWith('QF')) {
           // Consultar los cuartos de esta categoría para conocer el orden de combate
@@ -291,9 +291,104 @@ export async function finishMatchAndPropagateWinnerAction(
               await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
             }
           }
+        } else if (roundCode === 'DP_SEMI') {
+          // En Pool Doble: Perdedor de la Semifinal Directa va a DP_BRONZE (BLUE)
+          const { data: dpBronzeMatch } = await supabase
+            .from('matches')
+            .select('id, white_athlete_id, status')
+            .eq('category_id', catId)
+            .eq('round', 'DP_BRONZE')
+            .maybeSingle();
+
+          if (dpBronzeMatch) {
+            const bronzeUpdate: Record<string, any> = {
+              blue_athlete_id: loserId,
+              updated_at: nowIso,
+            };
+            if (dpBronzeMatch.white_athlete_id) {
+              bronzeUpdate.status = 'SCHEDULED';
+            }
+            await supabase.from('matches').update(bronzeUpdate).eq('id', dpBronzeMatch.id);
+          }
         }
       } catch (loserErr) {
         console.warn('[finishMatch] Error propagando perdedor a repechaje/bronce:', loserErr);
+      }
+    }
+
+    // 4.2. PROPAGACIÓN POOL A EN POOL DOBLE (5 COMPETIDORES):
+    // Cuando finalizan los 3 combates del Pool A, 1° pasa a DP_FINAL y 2° pasa a DP_BRONZE
+    if (roundCode.startsWith('DP_POOL_A') && catId) {
+      try {
+        const { data: poolAMatches } = await supabase
+          .from('matches')
+          .select('id, round, status, winner_id, white_athlete_id, blue_athlete_id, white_ippon, white_wazaari, blue_ippon, blue_wazaari')
+          .eq('category_id', catId)
+          .ilike('round', 'DP_POOL_A%');
+
+        if (poolAMatches) {
+          const effMatches = poolAMatches.map((m) =>
+            m.id === matchId ? { ...m, status: 'FINISHED', winner_id: winnerId } : m
+          );
+          const allFinished = effMatches.every((m) => m.status === 'FINISHED');
+          if (allFinished) {
+            const stats = new Map<string, { wins: number; points: number }>();
+            effMatches.forEach((m) => {
+              if (m.white_athlete_id && !stats.has(m.white_athlete_id)) stats.set(m.white_athlete_id, { wins: 0, points: 0 });
+              if (m.blue_athlete_id && !stats.has(m.blue_athlete_id)) stats.set(m.blue_athlete_id, { wins: 0, points: 0 });
+              if (m.winner_id) {
+                const s = stats.get(m.winner_id);
+                if (s) {
+                  s.wins += 1;
+                  const pts = m.winner_id === m.white_athlete_id
+                    ? (m.white_ippon * 10 + m.white_wazaari * 7)
+                    : (m.blue_ippon * 10 + m.blue_wazaari * 7);
+                  s.points += pts || 10;
+                }
+              }
+            });
+
+            const sortedPoolA = Array.from(stats.entries()).sort((a, b) => {
+              if (b[1].wins !== a[1].wins) return b[1].wins - a[1].wins;
+              return b[1].points - a[1].points;
+            });
+
+            if (sortedPoolA.length >= 2) {
+              const firstPoolA = sortedPoolA[0][0];
+              const secondPoolA = sortedPoolA[1][0];
+
+              // 1° de Pool A va a DP_FINAL (WHITE)
+              const { data: finalM } = await supabase
+                .from('matches')
+                .select('id, blue_athlete_id')
+                .eq('category_id', catId)
+                .eq('round', 'DP_FINAL')
+                .maybeSingle();
+
+              if (finalM) {
+                const fUp: Record<string, any> = { white_athlete_id: firstPoolA, updated_at: nowIso };
+                if (finalM.blue_athlete_id) fUp.status = 'SCHEDULED';
+                await supabase.from('matches').update(fUp).eq('id', finalM.id);
+              }
+
+              // 2° de Pool A va a DP_BRONZE (WHITE)
+              const { data: bronzeM } = await supabase
+                .from('matches')
+                .select('id, blue_athlete_id')
+                .eq('category_id', catId)
+                .eq('round', 'DP_BRONZE')
+                .maybeSingle();
+
+              if (bronzeM) {
+                const bUp: Record<string, any> = { white_athlete_id: secondPoolA, updated_at: nowIso };
+                if (bronzeM.blue_athlete_id) bUp.status = 'SCHEDULED';
+                await supabase.from('matches').update(bUp).eq('id', bronzeM.id);
+              }
+            }
+          }
+        }
+      } catch (poolAErr) {
+        console.warn('[finishMatch] Error propagando clasificados de Pool A:', poolAErr);
       }
     }
 
