@@ -118,10 +118,10 @@ export async function finishMatchAndPropagateWinnerAction(
 
     const whiteName = whiteAth
       ? `${whiteAth.first_name} ${whiteAth.last_name}`.trim()
-      : 'Atleta Blanco';
+      : 'Judoka Blanco';
     const blueName = blueAth
       ? `${blueAth.first_name} ${blueAth.last_name}`.trim()
-      : 'Atleta Azul';
+      : 'Judoka Azul';
     const whiteClub =
       whiteAth?.club?.name ||
       (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente');
@@ -224,72 +224,64 @@ export async function finishMatchAndPropagateWinnerAction(
     if (loserId && catId && (roundCode === 'QF' || roundCode.startsWith('QF') || roundCode === 'SF' || roundCode.startsWith('SF') || roundCode === 'DP_SEMI')) {
       try {
         if (roundCode === 'QF' || roundCode.startsWith('QF')) {
-          // Consultar los cuartos de esta categoría para conocer el orden de combate
-          const { data: qfMatches } = await supabase
+          // Obtener combates clave de la categoría para resolver la rama estructural (Rama A vs Rama B)
+          const { data: catMatches } = await supabase
             .from('matches')
-            .select('id, match_number')
+            .select('id, round, next_match_id, next_match_slot')
+            .eq('category_id', catId);
+
+          const sfMatches = (catMatches || []).filter((m) => (m.round || '').toUpperCase().startsWith('SF'));
+          const sf1 = sfMatches.find((m) => m.next_match_slot === 'WHITE') || sfMatches[0];
+          const sf2 = sfMatches.find((m) => m.next_match_slot === 'BLUE') || sfMatches[1];
+
+          // Determinar a qué rama pertenece este combate de cuartos según la semifinal que alimenta
+          const isRamaA = sf1 && rawMatch?.next_match_id === sf1.id;
+          const targetRepRound = isRamaA ? 'REPECHAGE_1' : 'REPECHAGE_2';
+          // El slot en repechaje replica el slot de entrada a semifinales
+          const targetSlot = rawMatch?.next_match_slot === 'WHITE' ? 'white_athlete_id' : 'blue_athlete_id';
+
+          const { data: repMatch } = await supabase
+            .from('matches')
+            .select('id, white_athlete_id, blue_athlete_id, status')
             .eq('category_id', catId)
-            .ilike('round', 'QF%')
-            .order('match_number', { ascending: true });
+            .eq('round', targetRepRound)
+            .maybeSingle();
 
-          if (qfMatches && qfMatches.length >= 2) {
-            const qfIndex = qfMatches.findIndex((m) => m.id === matchId);
-            // QF 0 y 1 van a REPECHAGE_1; QF 2 y 3 van a REPECHAGE_2
-            const targetRepRound = qfIndex < 2 ? 'REPECHAGE_1' : 'REPECHAGE_2';
-            const targetSlot = (qfIndex % 2 === 0) ? 'white_athlete_id' : 'blue_athlete_id';
-
-            const { data: repMatch } = await supabase
-              .from('matches')
-              .select('id, white_athlete_id, blue_athlete_id, status')
-              .eq('category_id', catId)
-              .eq('round', targetRepRound)
-              .maybeSingle();
-
-            if (repMatch) {
-              const repUpdate: Record<string, any> = {
-                [targetSlot]: loserId,
-                updated_at: nowIso,
-              };
-              const oppositeSlot = targetSlot === 'white_athlete_id' ? repMatch.blue_athlete_id : repMatch.white_athlete_id;
-              if (oppositeSlot) {
-                repUpdate.status = 'SCHEDULED';
-              }
-              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
+          if (repMatch) {
+            const repUpdate: Record<string, any> = {
+              [targetSlot]: loserId,
+              updated_at: nowIso,
+            };
+            const oppositeSlot = targetSlot === 'white_athlete_id' ? repMatch.blue_athlete_id : repMatch.white_athlete_id;
+            if (oppositeSlot) {
+              repUpdate.status = 'SCHEDULED';
             }
+            await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
           }
         } else if (roundCode === 'SF' || roundCode.startsWith('SF')) {
-          // En Semifinales: Cruzar perdedores hacia el Bronce
-          // SF 1 loser -> BRONZE_2 (WHITE)
-          // SF 2 loser -> BRONZE_1 (WHITE)
-          const { data: sfMatches } = await supabase
+          // EN SEMIFINALES (REGLA OFICIAL IJF):
+          // El árbol principal nunca cruza pools. El ÚNICO cruce oficial es aquí:
+          // - El perdedor de Semifinal 1 (Rama A) cruza a Disputa por Bronce B (BRONZE_2) frente al ganador de Repechaje 2
+          // - El perdedor de Semifinal 2 (Rama B) cruza a Disputa por Bronce A (BRONZE_1) frente al ganador de Repechaje 1
+          const isSF1 = rawMatch?.next_match_slot === 'WHITE';
+          const targetBronzeRound = isSF1 ? 'BRONZE_2' : 'BRONZE_1';
+
+          const { data: bronzeMatch } = await supabase
             .from('matches')
-            .select('id, match_number')
+            .select('id, white_athlete_id, blue_athlete_id, status')
             .eq('category_id', catId)
-            .ilike('round', 'SF%')
-            .order('match_number', { ascending: true });
+            .eq('round', targetBronzeRound)
+            .maybeSingle();
 
-          if (sfMatches && sfMatches.length >= 2) {
-            const sfIndex = sfMatches.findIndex((m) => m.id === matchId);
-            // Si es SF 1 (index 0) va a BRONZE_2; si es SF 2 (index 1) va a BRONZE_1
-            const targetBronzeRound = sfIndex === 0 ? 'BRONZE_2' : 'BRONZE_1';
-
-            const { data: bronzeMatch } = await supabase
-              .from('matches')
-              .select('id, white_athlete_id, blue_athlete_id, status')
-              .eq('category_id', catId)
-              .eq('round', targetBronzeRound)
-              .maybeSingle();
-
-            if (bronzeMatch) {
-              const bronzeUpdate: Record<string, any> = {
-                white_athlete_id: loserId,
-                updated_at: nowIso,
-              };
-              if (bronzeMatch.blue_athlete_id) {
-                bronzeUpdate.status = 'SCHEDULED';
-              }
-              await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
+          if (bronzeMatch) {
+            const bronzeUpdate: Record<string, any> = {
+              white_athlete_id: loserId,
+              updated_at: nowIso,
+            };
+            if (bronzeMatch.blue_athlete_id) {
+              bronzeUpdate.status = 'SCHEDULED';
             }
+            await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
           }
         } else if (roundCode === 'DP_SEMI') {
           // En Pool Doble: Perdedor de la Semifinal Directa va a DP_BRONZE (BLUE)

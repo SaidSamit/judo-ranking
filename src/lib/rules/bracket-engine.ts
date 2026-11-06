@@ -830,8 +830,8 @@ function generateSingleElimination(
         round_name: 'Repechaje 1 (Cuadro Superior)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: 'Perdedor Cuartos #1',
-        blue_athlete_name: 'Perdedor Cuartos #2',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -853,8 +853,8 @@ function generateSingleElimination(
         round_name: 'Repechaje 2 (Cuadro Inferior)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: qfMatches.length >= 3 ? 'Perdedor Cuartos #3' : 'Perdedor Cuartos',
-        blue_athlete_name: qfMatches.length >= 4 ? 'Perdedor Cuartos #4' : 'Por definir',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -876,8 +876,8 @@ function generateSingleElimination(
         round_name: 'Disputa por Bronce A (3° Lugar)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: 'Perdedor Semifinal #2',
-        blue_athlete_name: 'Ganador Repechaje 1',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -899,8 +899,8 @@ function generateSingleElimination(
         round_name: 'Disputa por Bronce B (3° Lugar)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: 'Perdedor Semifinal #1',
-        blue_athlete_name: 'Ganador Repechaje 2',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -1061,13 +1061,24 @@ export function sequenceTatamiMatches(
 
     // Seleccionar el mejor candidato:
     // 1. Menor peso de ronda (respetar la progresión del torneo)
-    // 2. Si el combate anterior era de la misma categoría, dar prioridad a una categoría diferente
-    // 3. Mayor tiempo de descanso acumulado para sus atletas
+    // 2. Si ambos combates son de la misma categoría, PRESERVAR estrictamente el orden estructural del cuadro
+    //    (ej: QF 1 -> QF 2 -> QF 3 -> QF 4; SF 1 antes de SF 2; Rep 1 antes de Rep 2; Bronce A antes de Bronce B)
+    // 3. Si son de categorías distintas, alternar y respetar tiempos de descanso acumulados
     candidates.sort((a, b) => {
       const weightA = getRoundWeight(a.round);
       const weightB = getRoundWeight(b.round);
       if (weightA !== weightB) {
         return weightA - weightB;
+      }
+
+      // Si ambos pertenecen a la misma categoría, conservar rigurosamente el orden de árbol
+      if (a.category_id === b.category_id) {
+        const origIdxA = matches.indexOf(a);
+        const origIdxB = matches.indexOf(b);
+        if (origIdxA !== -1 && origIdxB !== -1) {
+          return origIdxA - origIdxB;
+        }
+        return (a.match_number || 0) - (b.match_number || 0);
       }
 
       if (prevMatch) {
@@ -1078,15 +1089,26 @@ export function sequenceTatamiMatches(
         }
       }
 
-      const lastA1 = a.white_athlete_id ? (lastFoughtAt.get(a.white_athlete_id) ?? -10) : -10;
-      const lastA2 = a.blue_athlete_id ? (lastFoughtAt.get(a.blue_athlete_id) ?? -10) : -10;
+      // Entre categorías distintas: priorizar combates con atletas ya definidos listos para combatir
+      const hasRealAthletesA = !!(a.white_athlete_id || a.blue_athlete_id);
+      const hasRealAthletesB = !!(b.white_athlete_id || b.blue_athlete_id);
+      if (hasRealAthletesA !== hasRealAthletesB) {
+        return hasRealAthletesA ? -1 : 1;
+      }
+
+      const lastA1 = a.white_athlete_id ? (lastFoughtAt.get(a.white_athlete_id) ?? -1) : -1;
+      const lastA2 = a.blue_athlete_id ? (lastFoughtAt.get(a.blue_athlete_id) ?? -1) : -1;
       const minRestA = Math.max(lastA1, lastA2);
 
-      const lastB1 = b.white_athlete_id ? (lastFoughtAt.get(b.white_athlete_id) ?? -10) : -10;
-      const lastB2 = b.blue_athlete_id ? (lastFoughtAt.get(b.blue_athlete_id) ?? -10) : -10;
+      const lastB1 = b.white_athlete_id ? (lastFoughtAt.get(b.white_athlete_id) ?? -1) : -1;
+      const lastB2 = b.blue_athlete_id ? (lastFoughtAt.get(b.blue_athlete_id) ?? -1) : -1;
       const minRestB = Math.max(lastB1, lastB2);
 
-      return minRestA - minRestB;
+      if (minRestA !== minRestB) {
+        return minRestA - minRestB;
+      }
+
+      return (a.match_number || 0) - (b.match_number || 0);
     });
 
     const chosen = candidates[0];

@@ -1083,7 +1083,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
       {/* CUERPO PRINCIPAL: PANTALLA DIVIDIDA POR HEMISFERIOS */}
       <main className="flex-1 grid grid-cols-12 gap-0 overflow-hidden">
         {/* ==================================================================== */}
-        {/* HEMISFERIO IZQUIERDO: ATLETA BLANCO (HOTKEYS: Q, W, E, R, A) */}
+        {/* HEMISFERIO IZQUIERDO: JUDOKA BLANCO (HOTKEYS: Q, W, E, R, A) */}
         {/* ==================================================================== */}
         <section className="col-span-5 bg-white text-slate-900 p-6 flex flex-col justify-between border-r-4 border-slate-900">
           <div>
@@ -1256,7 +1256,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         </section>
 
         {/* ==================================================================== */}
-        {/* HEMISFERIO DERECHO: ATLETA AZUL (HOTKEYS: U, I, O, P, L) */}
+        {/* HEMISFERIO DERECHO: JUDOKA AZUL (HOTKEYS: U, I, O, P, L) */}
         {/* ==================================================================== */}
         <section className="col-span-5 bg-blue-700 text-white p-6 flex flex-col justify-between">
           <div>

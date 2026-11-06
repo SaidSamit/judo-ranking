@@ -50,8 +50,8 @@ export async function confirmRegistrationsAction(
     return {
       success: false,
       count: 0,
-      message: 'No hay atletas en el estado borrador para confirmar.',
-      error: 'La lista de atletas está vacía.',
+      message: 'No hay judokas en el estado borrador para confirmar.',
+      error: 'La lista de judokas está vacía.',
     };
   }
 
@@ -358,7 +358,7 @@ export async function confirmRegistrationsAction(
     return {
       success: true,
       count: dedupedRegistrations.length,
-      message: `¡Inscripción exitosa! Se confirmaron y almacenaron ${dedupedRegistrations.length} atletas en la base de datos.`,
+      message: `¡Inscripción exitosa! Se confirmaron y almacenaron ${dedupedRegistrations.length} judokas en la base de datos.`,
     };
   } catch (err: any) {
     console.error('[confirmRegistrationsAction] Error:', err);

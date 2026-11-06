@@ -254,8 +254,8 @@ export async function generateCategoryMatchesAction(params: {
     if (!registrations || registrations.length < 1) {
       return {
         success: false,
-        message: 'No hay atletas pesados y aprobados para generar la categoría.',
-        error: 'Cantidad insuficiente de atletas clasificados.',
+        message: 'No hay judokas pesados y aprobados para generar la categoría.',
+        error: 'Cantidad insuficiente de judokas clasificados.',
       };
     }
 
@@ -849,106 +849,15 @@ export async function getAllTatamisQueueAction(
 }
 
 
+import { getMatchByIdAction as getMatchByIdFromMatches } from './matches';
+
 /**
- * Obtiene un combate específico por su ID con datos completos de atletas y categoría.
+ * Obtiene un combate específico por su ID con datos completos de judokas y categoría.
  * Utilizado por la Mesa de Control (/tatami/[id]) para inicializar el combate llamado.
+ * Consolidado en `matches.ts` para eliminar duplicidad en el backend.
  */
-export async function getMatchByIdAction(
-  matchId: string
-): Promise<{ success: boolean; match?: any; error?: string }> {
-  try {
-    const supabase = createAdminClient();
-
-    const { data, error } = await supabase
-      .from('matches')
-      .select(`
-        id,
-        tournament_id,
-        category_id,
-        tatami_number,
-        match_number,
-        round,
-        status,
-        white_athlete_id,
-        blue_athlete_id,
-        next_match_id,
-        next_match_slot,
-        winner_id,
-        white_ippon,
-        white_wazaari,
-        white_yuko,
-        white_shido,
-        blue_ippon,
-        blue_wazaari,
-        blue_yuko,
-        blue_shido,
-        current_match_time_seconds,
-        category:categories (
-          id,
-          name,
-          match_duration_seconds
-        ),
-        white_athlete:athletes!matches_white_athlete_id_fkey (
-          id,
-          first_name,
-          last_name,
-          club:clubs (
-            name
-          )
-        ),
-        blue_athlete:athletes!matches_blue_athlete_id_fkey (
-          id,
-          first_name,
-          last_name,
-          club:clubs (
-            name
-          )
-        )
-      `)
-      .eq('id', matchId)
-      .maybeSingle();
-
-    if (error || !data) {
-      return { success: false, error: error?.message || 'Combate no encontrado' };
-    }
-
-    const rawData = data as any;
-    const whiteAth = Array.isArray(rawData?.white_athlete) ? rawData.white_athlete[0] : rawData?.white_athlete;
-    const blueAth = Array.isArray(rawData?.blue_athlete) ? rawData.blue_athlete[0] : rawData?.blue_athlete;
-
-    const whiteName = whiteAth
-      ? `${whiteAth.first_name || ''} ${whiteAth.last_name || ''}`.trim()
-      : 'Atleta Blanco';
-    const blueName = blueAth
-      ? `${blueAth.first_name || ''} ${blueAth.last_name || ''}`.trim()
-      : 'Atleta Azul';
-
-    const categoryObj = Array.isArray(rawData?.category) ? rawData.category[0] : rawData?.category;
-
-    const matchPayload = {
-      id: data.id,
-      tournament_id: data.tournament_id,
-      category_id: data.category_id,
-      category_name: categoryObj?.name || 'Categoría Oficial',
-      tatami_number: data.tatami_number,
-      match_number: data.match_number,
-      white_athlete_name: whiteName,
-      white_club_name: whiteAth?.club?.name || (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente'),
-      blue_athlete_name: blueName,
-      blue_club_name: blueAth?.club?.name || (Array.isArray(blueAth?.club) ? blueAth.club[0]?.name : 'Independiente'),
-      match_duration_seconds: categoryObj?.match_duration_seconds || 240,
-      status: data.status || 'SCHEDULED',
-      current_time_seconds: data.current_match_time_seconds || 0,
-      next_match_id: data.next_match_id || null,
-      next_match_slot: data.next_match_slot || null,
-      updated_at: new Date().toISOString(),
-    };
-
-    return { success: true, match: matchPayload };
-  } catch (err: any) {
-    console.error('[getMatchByIdAction] Error:', err);
-    return { success: false, error: err.message };
-  }
+export async function getMatchByIdAction(matchId: string) {
+  return getMatchByIdFromMatches(matchId);
 }
 
 /**
@@ -1465,18 +1374,41 @@ export async function getTournamentPodiumsAction(
       return { success: false, results: [], error: matchErr?.message };
     }
 
+    // 2.1 Obtener todas las inscripciones del torneo para asegurar caché exhaustivo de judokas
+    const { data: registrations } = await supabase
+      .from('tournament_registrations')
+      .select(`
+        athlete_id,
+        category_id,
+        status,
+        athlete:athletes (id, first_name, last_name, club:clubs (name))
+      `)
+      .eq('tournament_id', tournamentId);
+
     const athleteCache = new Map<string, { id: string; name: string; club: string }>();
+
+    (registrations || []).forEach((r: any) => {
+      const a = Array.isArray(r.athlete) ? r.athlete[0] : r.athlete;
+      if (a?.id) {
+        athleteCache.set(a.id, {
+          id: a.id,
+          name: `${a.first_name || ''} ${a.last_name || ''}`.trim(),
+          club: a.club?.name || (Array.isArray(a.club) ? a.club[0]?.name : 'Independiente'),
+        });
+      }
+    });
+
     (matches || []).forEach((m: any) => {
       const w = Array.isArray(m.white_athlete) ? m.white_athlete[0] : m.white_athlete;
       const b = Array.isArray(m.blue_athlete) ? m.blue_athlete[0] : m.blue_athlete;
-      if (w?.id) {
+      if (w?.id && !athleteCache.has(w.id)) {
         athleteCache.set(w.id, {
           id: w.id,
           name: `${w.first_name || ''} ${w.last_name || ''}`.trim(),
           club: w.club?.name || (Array.isArray(w.club) ? w.club[0]?.name : 'Independiente'),
         });
       }
-      if (b?.id) {
+      if (b?.id && !athleteCache.has(b.id)) {
         athleteCache.set(b.id, {
           id: b.id,
           name: `${b.first_name || ''} ${b.last_name || ''}`.trim(),
@@ -1487,6 +1419,7 @@ export async function getTournamentPodiumsAction(
 
     const results: CategoryPodiumResult[] = categories.map((cat) => {
       const catMatches = (matches || []).filter((m: any) => m.category_id === cat.id);
+      const catRegs = (registrations || []).filter((r: any) => r.category_id === cat.id);
       const totalMatches = catMatches.length;
       const finishedMatches = catMatches.filter((m: any) => m.status === 'FINISHED').length;
 
@@ -1497,10 +1430,10 @@ export async function getTournamentPodiumsAction(
       const fifthPlaces: { athleteId: string; name: string; club: string }[] = [];
       const seventhPlaces: { athleteId: string; name: string; club: string }[] = [];
 
-      // A. Categoría Sin Contendor (1 competidor)
-      if (catMatches.length === 1 && !catMatches[0].blue_athlete_id) {
+      // A. Categoría Sin Contendor (1 competidor) o combate único sin rival
+      if ((catMatches.length === 1 && !catMatches[0].blue_athlete_id) || (catMatches.length === 0 && catRegs.length === 1)) {
         const m = catMatches[0];
-        const champId = m.winner_id || m.white_athlete_id;
+        const champId = m ? (m.winner_id || m.white_athlete_id) : catRegs[0]?.athlete_id;
         if (champId) {
           const champ = athleteCache.get(champId);
           if (champ) firstPlace = { athleteId: champ.id, name: champ.name, club: champ.club };
@@ -1637,7 +1570,9 @@ export async function getTournamentPodiumsAction(
         }
       }
 
-      const isFinished = totalMatches > 0 && finishedMatches === totalMatches;
+      const isFinished =
+        (totalMatches > 0 && finishedMatches === totalMatches && firstPlace !== null) ||
+        (totalMatches === 0 && catRegs.length === 1 && firstPlace !== null);
 
       return {
         categoryId: cat.id,

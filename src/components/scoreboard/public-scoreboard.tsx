@@ -119,7 +119,7 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
       {/* ==================================================================== */}
       <main className="flex-1 grid grid-cols-12 gap-0 overflow-hidden">
         {/* ================================================================== */}
-        {/* LADO IZQUIERDO: ATLETA BLANCO (SHIRO) */}
+        {/* LADO IZQUIERDO: JUDOKA BLANCO (SHIRO) */}
         {/* ================================================================== */}
         <section className="col-span-5 bg-white text-slate-950 p-8 flex flex-col justify-between border-r-4 border-slate-950">
           <div>
@@ -249,7 +249,7 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
         </section>
 
         {/* ================================================================== */}
-        {/* LADO DERECHO: ATLETA AZUL (AO) */}
+        {/* LADO DERECHO: JUDOKA AZUL (AO) */}
         {/* ================================================================== */}
         <section className="col-span-5 bg-blue-700 text-white p-8 flex flex-col justify-between">
           <div>

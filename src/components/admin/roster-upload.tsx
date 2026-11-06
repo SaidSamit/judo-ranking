@@ -341,8 +341,8 @@ export function RosterUpload({
     setFeedbackMessage({
       type: 'info',
       text: isAdditionalCategory
-        ? `Atleta "${cleanName}" inscrito en categoría ADICIONAL (${cleanCategory}).`
-        : `Atleta "${cleanName}" (${cleanCategory}) agregado al borrador.`,
+        ? `Judoka "${cleanName}" inscrito en categoría ADICIONAL (${cleanCategory}).`
+        : `Judoka "${cleanName}" (${cleanCategory}) agregado al borrador.`,
     });
 
     rutInputRef.current?.focus();
@@ -368,7 +368,7 @@ export function RosterUpload({
             type: 'error',
             text:
               parseResult.message ||
-              `No se encontraron atletas válidos en la planilla Excel "${file.name}". Verifica que contenga las columnas oficiales (NOMBRE, APELLIDO, GENERO, FEC. NAC., CATEGORÍA, etc.).`,
+              `No se encontraron judokas válidos en la planilla Excel "${file.name}". Verifica que contenga las columnas oficiales (NOMBRE, APELLIDO, GENERO, FEC. NAC., CATEGORÍA, etc.).`,
           });
           if (csvInputRef.current) csvInputRef.current.value = '';
           return;
@@ -458,7 +458,7 @@ export function RosterUpload({
           setDraftAthletes((prev) => [...imported, ...prev]);
           setFeedbackMessage({
             type: 'success',
-            text: `Se importaron ${imported.length} atletas del CSV y se agregaron a la tabla borrador.`,
+            text: `Se importaron ${imported.length} judokas del CSV y se agregaron a la tabla borrador.`,
           });
           setShowCsvDropzone(false);
         } else {
@@ -622,7 +622,7 @@ export function RosterUpload({
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800 pb-3">
           <div>
             <h2 className="text-xl font-bold text-white flex items-center space-x-2">
-              <span>Acreditación Rápida de Atletas</span>
+              <span>Acreditación Rápida de Judokas</span>
               <span className="text-xs bg-amber-500/20 text-amber-400 border border-amber-500/40 px-2 py-0.5 rounded-full font-mono">
                 Modo Borrador
               </span>
@@ -895,7 +895,7 @@ export function RosterUpload({
             <span className="text-base font-black text-white flex items-center space-x-2">
               <span>Nómina en Borrador</span>
               <span className="text-xs bg-slate-800 text-slate-300 border border-slate-700 px-2.5 py-0.5 rounded-full font-mono">
-                {draftAthletes.length} atletas
+                {draftAthletes.length} judokas
               </span>
             </span>
           </div>
@@ -935,12 +935,12 @@ export function RosterUpload({
           </div>
         </div>
 
-        {/* TABLA DE ATLETAS */}
+        {/* TABLA DE JUDOKAS */}
         {draftAthletes.length === 0 ? (
           <div className="p-12 text-center space-y-2 text-slate-500">
             <Users className="w-10 h-10 mx-auto text-slate-600" />
-            <p className="text-sm font-bold">No hay atletas en el borrador temporal.</p>
-            <p className="text-xs">Usa el formulario superior para añadir atletas o importa un archivo CSV.</p>
+            <p className="text-sm font-bold">No hay judokas en el borrador temporal.</p>
+            <p className="text-xs">Usa el formulario superior para añadir judokas o importa un archivo CSV.</p>
           </div>
         ) : (
           <div className="overflow-x-auto max-h-96">
@@ -949,7 +949,7 @@ export function RosterUpload({
                 <tr>
                   <th className="px-4 py-3">#</th>
                   <th className="px-4 py-3">RUT</th>
-                  <th className="px-4 py-3">Nombre Atleta</th>
+                  <th className="px-4 py-3">Nombre Judoka</th>
                   <th className="px-4 py-3">Club / Escuela</th>
                   <th className="px-4 py-3">Año (Edad)</th>
                   <th className="px-4 py-3">Género</th>

@@ -17,7 +17,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   Trophy,
   ChevronLeft,
@@ -29,6 +29,10 @@ import {
   ArrowLeft,
   ExternalLink,
   Layers,
+  Users,
+  Scale,
+  KeyRound,
+  Swords,
 } from 'lucide-react';
 
 interface NavItem {
@@ -47,6 +51,7 @@ interface NavSection {
 
 export function AdminSidebar() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -69,7 +74,10 @@ export function AdminSidebar() {
   const isInsideTournament =
     pathname.startsWith('/admin/tournaments/') && pathname !== '/admin/tournaments';
 
-  // Secciones de navegación del sidebar (Limpio y aislado por campeonato)
+  const tournamentIdMatch = pathname.match(/\/admin\/tournaments\/([^/?]+)/);
+  const currentTournamentId = tournamentIdMatch ? tournamentIdMatch[1] : null;
+
+  // Secciones de navegación del sidebar (Limpio y contextual por campeonato)
   const navSections: NavSection[] = [
     {
       title: 'Competición Oficial',
@@ -83,6 +91,45 @@ export function AdminSidebar() {
         },
       ],
     },
+    ...(currentTournamentId
+      ? [
+          {
+            title: 'Módulos del Torneo',
+            items: [
+              {
+                label: 'Inscripciones',
+                href: `/admin/tournaments/${currentTournamentId}?tab=roster`,
+                icon: Users,
+              },
+              {
+                label: 'Pesaje Oficial',
+                href: `/admin/tournaments/${currentTournamentId}?tab=weigh_in`,
+                icon: Scale,
+              },
+              {
+                label: 'Sorteo y Llaves',
+                href: `/admin/tournaments/${currentTournamentId}?tab=brackets`,
+                icon: Swords,
+              },
+              {
+                label: 'Tatamis y PINs',
+                href: `/admin/tournaments/${currentTournamentId}?tab=credentials`,
+                icon: KeyRound,
+              },
+              {
+                label: 'Monitor Tatamis',
+                href: `/admin/tournaments/${currentTournamentId}?tab=tatamis`,
+                icon: Layers,
+              },
+              {
+                label: 'Resultados / Podio',
+                href: `/admin/tournaments/${currentTournamentId}?tab=results`,
+                icon: Trophy,
+              },
+            ],
+          },
+        ]
+      : []),
   ];
 
   if (!mounted) return null;
@@ -174,9 +221,14 @@ export function AdminSidebar() {
               <div className="space-y-1">
                 {section.items.map((item) => {
                   const Icon = item.icon;
-                  const isActive =
-                    pathname === item.href ||
-                    pathname.startsWith(item.href);
+                  let isActive = false;
+                  if (item.href.includes('?tab=')) {
+                    const currentTab = searchParams.get('tab') || 'roster';
+                    const targetTab = item.href.split('?tab=')[1];
+                    isActive = pathname.startsWith(item.href.split('?')[0]) && currentTab === targetTab;
+                  } else {
+                    isActive = pathname === item.href;
+                  }
 
                   return (
                     <Link
