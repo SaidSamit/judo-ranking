@@ -476,7 +476,7 @@ export function BracketViewer({
             <div className="mt-8 pt-6 border-t border-slate-800 space-y-4">
               <div className="flex items-center space-x-2 text-orange-400 font-bold text-xs uppercase tracking-wider">
                 <Swords className="w-4 h-4 text-orange-400" />
-                <span>Sistema de Repechaje y Doble Bronce (Reglamento IJF)</span>
+                <span>Sistema de Repechaje y Doble Bronce</span>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-950/60 p-4 rounded-xl border border-slate-800">
@@ -572,7 +572,7 @@ export function BracketViewer({
                 </h3>
               </div>
               <span className="text-[11px] text-slate-400 font-mono">
-                Modalidad Oficial IJF (5 Judokas)
+                Modalidad Pool Doble (5 Judokas)
               </span>
             </div>
 

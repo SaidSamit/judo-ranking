@@ -64,11 +64,11 @@ export function TournamentBracketsTab({
           <div>
             <h2 className="text-lg font-black text-white flex items-center space-x-2">
               <Trophy className="w-5 h-5 text-amber-400" />
-              <span>Sorteo y Visor de Llaves - {tournament.name}</span>
+              <span>Sorteo - {tournament.name}</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Genera las llaves y cruces según el pesaje cerrado. Modifica cruces o visualiza el
-              árbol de eliminación / Round Robin.
+              Genera el sorteo y cruces según el pesaje cerrado. Modifica cruces o visualiza la
+              llave de competición.
             </p>
           </div>
 
@@ -320,8 +320,20 @@ export function TournamentBracketsTab({
               <p className="text-xs text-slate-500 max-w-md mx-auto">
                 El sistema aplicará las reglas del sorteo oficial: con 1 competidor se proclama campeón directo,
                 con 2 competidores se disputará al Mejor de 3, entre 3 y 5 se genera Pool Doble o Round Robin, y para 6 o más
-                se dibuja el árbol de eliminación directa con repechajes y doble bronce IJF.
+                se dibuja el árbol de eliminación directa con repechajes y doble bronce.
               </p>
+              {activeCategory.matches_generated && (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelectCategoryId(activeCategory.id)}
+                    className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition inline-flex items-center space-x-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Reintentar Cargar Sorteo</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </section>

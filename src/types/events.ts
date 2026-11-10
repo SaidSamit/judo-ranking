@@ -67,6 +67,13 @@ export interface MatchProjection {
   direct_hansoku_target: CombatantColor | null;
 }
 
+export interface AuxTimerData {
+  is_active: boolean;
+  seconds_remaining: number;
+  total_seconds: number;
+  title: string;
+}
+
 export interface BroadcastMatchPayload {
   match_id: string;
   tatami_number: number;
@@ -84,5 +91,6 @@ export interface BroadcastMatchPayload {
   is_golden_score: boolean;
   match_status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED' | 'PENDING';
   projection: MatchProjection;
+  aux_timer?: AuxTimerData | null;
   timestamp: number;
 }

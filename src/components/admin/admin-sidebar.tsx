@@ -107,7 +107,7 @@ export function AdminSidebar() {
                 icon: Scale,
               },
               {
-                label: 'Sorteo y Llaves',
+                label: 'Sorteo',
                 href: `/admin/tournaments/${currentTournamentId}?tab=brackets`,
                 icon: Swords,
               },

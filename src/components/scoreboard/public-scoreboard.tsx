@@ -312,6 +312,118 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
           </div>
         </section>
       </main>
+
+      {/* ==================================================================== */}
+      {/* OVERLAY DE CUENTA REGRESIVA / RECESO / ESPERA (TV SCOREBOARD DISPLAY) */}
+      {/* ==================================================================== */}
+      {matchData.aux_timer?.is_active && (
+        <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col justify-between items-center p-8 sm:p-12 text-center animate-in fade-in duration-300">
+          {/* Encabezado TV */}
+          <div className="w-full flex items-center justify-between border-b-2 border-slate-800 pb-5 max-w-6xl">
+            <div className="flex items-center space-x-4">
+              <span className="text-4xl sm:text-5xl font-black text-amber-400 tracking-wider">
+                TATAMI {matchData.tatami_number}
+              </span>
+              <span className="text-lg sm:text-xl font-bold px-4 py-1.5 rounded-full bg-slate-900 text-slate-300 border border-slate-700">
+                {matchData.category_name} • Combate #{matchData.match_number}
+              </span>
+            </div>
+            <div className="flex items-center space-x-3 text-amber-400 text-lg font-bold font-mono">
+              <span className="w-3.5 h-3.5 rounded-full bg-amber-400 animate-ping" />
+              <span>CONTEO OFICIAL</span>
+            </div>
+          </div>
+
+          {/* Bloque Central de Gran Escala */}
+          <div className="my-auto flex flex-col items-center justify-center space-y-4 max-w-4xl w-full">
+            <div className="text-2xl sm:text-3xl lg:text-4xl font-black uppercase tracking-widest text-slate-300">
+              {matchData.aux_timer.title || 'Tiempo de Espera'}
+            </div>
+
+            {/* Reloj Gigante de Alta Visibilidad a Distancia */}
+            <div
+              className={`font-mono font-black tracking-tight leading-none text-[8rem] sm:text-[14rem] md:text-[18rem] transition-colors ${
+                matchData.aux_timer.seconds_remaining === 0
+                  ? 'text-red-500 animate-pulse'
+                  : matchData.aux_timer.seconds_remaining <= 10
+                  ? 'text-red-400 animate-pulse'
+                  : matchData.aux_timer.seconds_remaining <= 30
+                  ? 'text-amber-400'
+                  : 'text-emerald-400'
+              }`}
+            >
+              {matchData.aux_timer.seconds_remaining === 0
+                ? '00"'
+                : matchData.aux_timer.seconds_remaining > 59
+                ? formatTime(matchData.aux_timer.seconds_remaining)
+                : `${String(matchData.aux_timer.seconds_remaining).padStart(2, '0')}"`}
+            </div>
+
+            {matchData.aux_timer.seconds_remaining === 0 && (
+              <div className="text-2xl sm:text-3xl font-black text-red-500 uppercase tracking-widest animate-bounce mt-4">
+                ⚠️ TIEMPO CUMPLIDO
+              </div>
+            )}
+
+            {/* Barra de Progreso Dinámica */}
+            <div className="w-full max-w-2xl bg-slate-900 h-4 rounded-full overflow-hidden border border-slate-800 mt-6">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  matchData.aux_timer.seconds_remaining <= 10
+                    ? 'bg-red-500'
+                    : matchData.aux_timer.seconds_remaining <= 30
+                    ? 'bg-amber-400'
+                    : 'bg-emerald-400'
+                }`}
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.max(
+                      0,
+                      (matchData.aux_timer.seconds_remaining / (matchData.aux_timer.total_seconds || 1)) * 100
+                    )
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Pie: Judokas Involucrados */}
+          <div className="w-full max-w-5xl bg-slate-900/90 border border-slate-800 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-around gap-6">
+            <div className="flex items-center space-x-4 text-left">
+              <span className="w-4 h-4 rounded-full bg-white shadow-md flex-shrink-0" />
+              <div>
+                <span className="text-xs uppercase tracking-wider text-slate-400 font-bold block">
+                  Judoka Blanco (Shiro)
+                </span>
+                <span className="text-2xl font-black text-white">
+                  {matchData.white_athlete_name || 'Por definir'}
+                </span>
+                {matchData.white_club_name && (
+                  <span className="text-xs text-slate-400 block">{matchData.white_club_name}</span>
+                )}
+              </div>
+            </div>
+
+            <span className="text-2xl font-black text-slate-600">VS</span>
+
+            <div className="flex items-center space-x-4 text-left">
+              <span className="w-4 h-4 rounded-full bg-blue-500 shadow-md flex-shrink-0" />
+              <div>
+                <span className="text-xs uppercase tracking-wider text-blue-400 font-bold block">
+                  Judoka Azul (Ao)
+                </span>
+                <span className="text-2xl font-black text-white">
+                  {matchData.blue_athlete_name || 'Por definir'}
+                </span>
+                {matchData.blue_club_name && (
+                  <span className="text-xs text-blue-300 block">{matchData.blue_club_name}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

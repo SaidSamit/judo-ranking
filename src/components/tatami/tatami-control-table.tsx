@@ -18,7 +18,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { MatchEvent, CombatantColor, MatchAction, BroadcastMatchPayload } from '@/types/events';
+import { MatchEvent, CombatantColor, MatchAction, BroadcastMatchPayload, AuxTimerData } from '@/types/events';
 import { projectMatchState, getOsaekomiAward } from '@/lib/rules/ijf-engine';
 import { useTatamiShortcuts } from '@/hooks/use-tatami-shortcuts';
 import { useRealtimeBroadcast } from '@/hooks/use-realtime-broadcast';
@@ -35,7 +35,8 @@ import {
 import { finishMatchAndPropagateWinnerAction, updateMatchStatusAction } from '@/app/actions/matches';
 import { getNextScheduledTatamiMatchAction } from '@/app/actions/brackets';
 import { isValidUuid } from '@/lib/utils/uuid';
-import { Sparkles, RotateCcw, Tv } from 'lucide-react';
+import { Sparkles, RotateCcw, Tv, Clock } from 'lucide-react';
+import { BreakCountdownModal } from './break-countdown-modal';
 
 interface TatamiControlTableProps {
   initialMatch: LocalMatch;
@@ -56,6 +57,8 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
     setNextScheduledMatch(null);
     setAutoAdvanceCountdown(null);
     setIsQueueEmpty(false);
+    setShowBreakTimerModal(false);
+    auxTimerRef.current = null;
   }, [initialMatch]);
 
   // 1. Estado de la Pila de Eventos (Fuente Única de Verdad)
@@ -77,6 +80,10 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   // Modal de Hansoku-make diferido (tipificación técnica vs disciplinaria al cerrar con Enter)
   const [showHansokuModal, setShowHansokuModal] = useState<boolean>(false);
   const [selectedHansokuType, setSelectedHansokuType] = useState<'TECHNICAL' | 'DISCIPLINARY'>('TECHNICAL');
+
+  // Modal de Conteo 30s de Espera / Receso y referencia de temporizador auxiliar
+  const [showBreakTimerModal, setShowBreakTimerModal] = useState<boolean>(false);
+  const auxTimerRef = useRef<AuxTimerData | null>(null);
 
   // Control de hidratación de SSR para evitar diferencias de renderizado
   const [isMounted, setIsMounted] = useState<boolean>(false);
@@ -147,6 +154,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
       is_golden_score: isGoldenScore,
       match_status: matchStatus,
       projection,
+      aux_timer: auxTimerRef.current,
       timestamp: Date.now(),
     };
   }, [
@@ -269,6 +277,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         is_golden_score: false,
         match_status: 'SCHEDULED',
         projection: projectMatchState([]),
+        aux_timer: null,
         timestamp: Date.now(),
       };
       broadcastState(initialSnap);
@@ -902,6 +911,56 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   ]);
 
   // ============================================================================
+  // GESTIÓN DEL CRONÓMETRO AUXILIAR (CONTEO 30s DE ESPERA / RECESO / FUSEN-GACHI)
+  // ============================================================================
+  const handleBroadcastTimerUpdate = useCallback(
+    (data: AuxTimerData | null) => {
+      auxTimerRef.current = data;
+      const snap = getLatestSnapshot();
+      broadcastState({
+        ...snap,
+        aux_timer: data,
+      } as BroadcastMatchPayload);
+    },
+    [getLatestSnapshot, broadcastState]
+  );
+
+  const handleCloseBreakTimer = useCallback(() => {
+    setShowBreakTimerModal(false);
+    auxTimerRef.current = null;
+    const snap = getLatestSnapshot();
+    broadcastState({
+      ...snap,
+      aux_timer: null,
+    } as BroadcastMatchPayload);
+  }, [getLatestSnapshot, broadcastState]);
+
+  const handleDeclareFusenGachi = useCallback(
+    async (winnerColor: 'WHITE' | 'BLUE') => {
+      const loserColor: CombatantColor = winnerColor === 'WHITE' ? 'BLUE' : 'WHITE';
+      handleCloseBreakTimer();
+
+      // 1. Descalificación directa al que no compareció
+      await dispatchEvent('ADD_HANSOKU_MAKE', loserColor, {
+        source: 'FUSEN_GACHI',
+        hansoku_type: 'TECHNICAL',
+        description: `Victoria por no comparecencia (Fusen-gachi) para ${
+          winnerColor === 'WHITE' ? currentMatch.white_athlete_name : currentMatch.blue_athlete_name
+        }`,
+      });
+
+      // 2. Parar reloj y sellar finalización de combate
+      setIsClockRunning(false);
+      setMatchStatus('FINISHED');
+      await dispatchEvent('DECLARATION_FINISH', null, {
+        hansoku_type: 'TECHNICAL',
+        source: 'FUSEN_GACHI',
+      });
+    },
+    [currentMatch.blue_athlete_name, currentMatch.white_athlete_name, dispatchEvent, handleCloseBreakTimer]
+  );
+
+  // ============================================================================
   // ENLACE CON HOOK DE ATAJOS DE TECLADO
   // ============================================================================
   useTatamiShortcuts({
@@ -920,7 +979,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
     onStopOsaekomi: stopOsaekomi,
     onSwapOsaekomi: swapOsaekomi,
     onDeclareFinish: declareFinish,
-    isEnabled: !showHansokuModal,
+    isEnabled: !showHansokuModal && !showBreakTimerModal,
   });
 
   return (
@@ -967,6 +1026,17 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         </div>
 
         <div className="flex items-center space-x-3">
+          {/* Botón Cronómetro Auxiliar (Conteo 30s / Receso) */}
+          <button
+            type="button"
+            onClick={() => setShowBreakTimerModal(true)}
+            className="flex items-center space-x-1.5 text-xs bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 px-3 py-1 rounded-xl border border-amber-500/40 hover:border-amber-500 font-black transition shadow-sm"
+            title="Abrir Cronómetro Auxiliar (Conteo 30s de Espera, Receso o Calentamiento)"
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>⏱ Conteo 30s / Receso</span>
+          </button>
+
           {/* Botón Abrir TV Realtime */}
           <a
             href={isDemoMode ? '/scoreboard/demo' : `/scoreboard/tatami-${currentMatch.tatami_number}`}
@@ -1448,6 +1518,18 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
           </div>
         </div>
       )}
+
+      {/* MODAL DE CRONÓMETRO AUXILIAR: CONTEO DE ESPERA 30s / RECESO / CALENTAMIENTO */}
+      <BreakCountdownModal
+        isOpen={showBreakTimerModal}
+        onClose={handleCloseBreakTimer}
+        tatamiNumber={currentMatch.tatami_number}
+        matchNumber={currentMatch.match_number}
+        whiteAthleteName={currentMatch.white_athlete_name}
+        blueAthleteName={currentMatch.blue_athlete_name}
+        onDeclareFusenGachi={handleDeclareFusenGachi}
+        onBroadcastTimerUpdate={handleBroadcastTimerUpdate}
+      />
     </div>
   );
 }

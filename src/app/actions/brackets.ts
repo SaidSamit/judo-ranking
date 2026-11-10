@@ -370,11 +370,30 @@ export async function getCategoryBracketAction(
   try {
     const supabase = createAdminClient();
 
-    const { data: category } = await supabase
+    let catId = categoryId;
+    let tourId = tournamentId;
+
+    // Blindaje defensivo: Si los argumentos fueron invertidos accidentalmente
+    let { data: category } = await supabase
       .from('categories')
       .select('id, name, assigned_tatami_number')
-      .eq('id', categoryId)
+      .eq('id', catId)
       .maybeSingle();
+
+    if (!category && tourId) {
+      const { data: altCategory } = await supabase
+        .from('categories')
+        .select('id, name, assigned_tatami_number')
+        .eq('id', tourId)
+        .maybeSingle();
+
+      if (altCategory) {
+        const temp = catId;
+        catId = tourId;
+        tourId = temp;
+        category = altCategory;
+      }
+    }
 
     const { data: matches, error } = await supabase
       .from('matches')
@@ -419,8 +438,8 @@ export async function getCategoryBracketAction(
           )
         )
       `)
-      .eq('tournament_id', tournamentId)
-      .eq('category_id', categoryId)
+      .eq('tournament_id', tourId)
+      .eq('category_id', catId)
       .order('match_number', { ascending: true });
 
     if (error || !matches || matches.length === 0) {
@@ -512,7 +531,7 @@ export async function getCategoryBracketAction(
             ? 'Modalidad al Mejor de 3 (Best of 3)'
             : bracketType === 'ROUND_ROBIN'
             ? 'Todos contra Todos (Round Robin Berger)'
-            : 'Eliminación Simple IJF',
+            : 'Eliminación Simple',
         rounds_count: 1,
         byes_count: 0,
       },
@@ -720,6 +739,9 @@ export async function getAllTatamisQueueAction(
         match_number,
         round,
         status,
+        winner_id,
+        next_match_id,
+        next_match_slot,
         white_athlete_id,
         blue_athlete_id,
         category:categories (
@@ -750,6 +772,72 @@ export async function getAllTatamisQueueAction(
     if (error) {
       console.warn('[getAllTatamisQueueAction] Error consultando combates:', error.message);
       return { success: false, tournamentId: targetTourId, tournamentName: tourName, columns: [], error: error.message };
+    }
+
+    // AUTO-RECUPERACIÓN DEFENSIVA DE BYES EN REPECHAJE:
+    // Si un combate de repechaje está PENDING y tiene un solo atleta porque el combate de cuartos opuesto fue un Bye,
+    // sellar automáticamente como victoria por Bye y propagar al combate por Bronce.
+    const pendingRepechages = (data || []).filter(
+      (m: any) =>
+        m.status === 'PENDING' &&
+        (m.round === 'REPECHAGE_1' || m.round === 'REPECHAGE_2') &&
+        ((m.white_athlete_id && !m.blue_athlete_id) || (!m.white_athlete_id && m.blue_athlete_id))
+    );
+
+    for (const rep of pendingRepechages) {
+      const isRep1 = rep.round === 'REPECHAGE_1';
+      const catId = rep.category_id;
+      const sfMatches = (data || []).filter(
+        (m: any) => m.category_id === catId && (m.round || '').toUpperCase().startsWith('SF')
+      );
+      const targetSF = isRep1
+        ? sfMatches.find((m: any) => m.next_match_slot === 'WHITE') || sfMatches[0]
+        : sfMatches.find((m: any) => m.next_match_slot === 'BLUE') || sfMatches[1];
+
+      if (targetSF) {
+        const qfMatches = (data || []).filter(
+          (m: any) =>
+            m.category_id === catId &&
+            (m.round || '').toUpperCase().startsWith('QF') &&
+            m.next_match_id === targetSF.id
+        );
+        const hasByeQF = qfMatches.some((qf: any) => !qf.white_athlete_id || !qf.blue_athlete_id);
+
+        if (hasByeQF) {
+          const soleAthleteId = rep.white_athlete_id || rep.blue_athlete_id;
+          const nowIso = new Date().toISOString();
+
+          await supabase
+            .from('matches')
+            .update({
+              winner_id: soleAthleteId,
+              status: 'FINISHED',
+              win_reason: 'BYE',
+              updated_at: nowIso,
+            })
+            .eq('id', rep.id);
+
+          rep.status = 'FINISHED';
+          rep.winner_id = soleAthleteId;
+
+          const targetBronzeRound = isRep1 ? 'BRONZE_1' : 'BRONZE_2';
+          const bronzeMatch = (data || []).find(
+            (m: any) => m.category_id === catId && m.round === targetBronzeRound
+          );
+          if (bronzeMatch) {
+            const bronzeUpdate: Record<string, any> = {
+              blue_athlete_id: soleAthleteId,
+              updated_at: nowIso,
+            };
+            if (bronzeMatch.white_athlete_id) {
+              bronzeUpdate.status = 'SCHEDULED';
+              bronzeMatch.status = 'SCHEDULED';
+            }
+            bronzeMatch.blue_athlete_id = soleAthleteId;
+            await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
+          }
+        }
+      }
     }
 
     // Normalizar todos los combates
@@ -805,13 +893,24 @@ export async function getAllTatamisQueueAction(
           (m) => (m.status === 'SCHEDULED' || m.status === 'PENDING') && m.id !== activeMatchItem!.id
         );
       } else {
+        // Priorizar el primer combate programado (SCHEDULED) con ambos atletas listos
         const firstReady = tatamiMatches.find(
-          (m) => m.status === 'SCHEDULED' || m.status === 'PENDING'
-        );
+          (m) =>
+            m.status === 'SCHEDULED' &&
+            m.white_athlete_name !== 'Por definir' &&
+            m.blue_athlete_name !== 'Por definir'
+        ) || tatamiMatches.find((m) => m.status === 'SCHEDULED');
+
         if (firstReady) {
           activeMatchItem = firstReady;
           remainingUpcoming = tatamiMatches.filter(
             (m) => (m.status === 'SCHEDULED' || m.status === 'PENDING') && m.id !== firstReady.id
+          );
+        } else {
+          // No hay combates SCHEDULED listos para pelear (todos están PENDING esperando llaves)
+          activeMatchItem = null;
+          remainingUpcoming = tatamiMatches.filter(
+            (m) => m.status === 'SCHEDULED' || m.status === 'PENDING'
           );
         }
       }
@@ -1597,5 +1696,78 @@ export async function getTournamentPodiumsAction(
   } catch (err: any) {
     console.error('[getTournamentPodiumsAction] Error:', err);
     return { success: false, results: [], error: err.message };
+  }
+}
+
+/**
+ * Reasigna un conjunto de combates pendientes/programados de un tatami a otro
+ * para balancear la carga del torneo cuando un tatami termina antes.
+ */
+export async function reassignMatchesBatchAction(params: {
+  matchIds: string[];
+  newTatamiNumber: number;
+  tournamentId?: string;
+}): Promise<{ success: boolean; count?: number; message?: string; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { matchIds, newTatamiNumber, tournamentId } = params;
+
+    if (!matchIds || matchIds.length === 0) {
+      return { success: false, error: 'No se seleccionaron combates para transferir.' };
+    }
+    if (!newTatamiNumber || newTatamiNumber < 1) {
+      return { success: false, error: 'Número de tatami de destino inválido.' };
+    }
+
+    // 1. Filtrar solo combates que NO estén en curso (ONGOING) ni finalizados (FINISHED)
+    const { data: targetMatches, error: fetchErr } = await supabase
+      .from('matches')
+      .select('id, match_number, status, tatami_number, category_id, tournament_id')
+      .in('id', matchIds)
+      .in('status', ['SCHEDULED', 'PENDING']);
+
+    if (fetchErr) throw new Error(fetchErr.message);
+    if (!targetMatches || targetMatches.length === 0) {
+      return {
+        success: false,
+        error: 'Ninguno de los combates seleccionados está disponible para transferir (ya finalizaron o están en curso).',
+      };
+    }
+
+    const validIds = targetMatches.map((m) => m.id);
+    const actualTourId = tournamentId || targetMatches[0].tournament_id;
+
+    // 2. Obtener el número de combate más alto actualmente en el tatami de destino
+    const { data: maxMatchOnDest } = await supabase
+      .from('matches')
+      .select('match_number')
+      .eq('tatami_number', newTatamiNumber)
+      .eq('tournament_id', actualTourId)
+      .order('match_number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let startNum = (maxMatchOnDest?.match_number || 0) + 1;
+
+    // 3. Actualizar tatami_number y correlativo para cada combate transferido
+    for (const m of targetMatches) {
+      await supabase
+        .from('matches')
+        .update({
+          tatami_number: newTatamiNumber,
+          match_number: startNum++,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', m.id);
+    }
+
+    return {
+      success: true,
+      count: validIds.length,
+      message: `Se transfirieron exitosamente ${validIds.length} combate(s) al Tatami ${newTatamiNumber}.`,
+    };
+  } catch (err: any) {
+    console.error('[reassignMatchesBatchAction] Error:', err);
+    return { success: false, error: err.message || 'Error al reasignar combates.' };
   }
 }

@@ -29,9 +29,15 @@ import {
   Layers,
   AlertCircle,
   ExternalLink,
+  ArrowRightLeft,
+  CheckSquare,
+  Square,
+  X,
+  Loader2,
 } from 'lucide-react';
 import {
   getAllTatamisQueueAction,
+  reassignMatchesBatchAction,
   TatamiColumn,
   MultiTatamiMatch,
 } from '@/app/actions/brackets';
@@ -52,6 +58,107 @@ export function MultiTatamiMonitorView({
   const [columns, setColumns] = useState<TatamiColumn[]>([]);
   const [loading, setLoading] = useState(true);
   const [showFinished, setShowFinished] = useState<{ [tatami: number]: boolean }>({});
+
+  // Estados para el Modal de Transferencia Masiva entre Tatamis
+  const [transferModalState, setTransferModalState] = useState<{
+    isOpen: boolean;
+    sourceTatami: number;
+    destinationTatami: number;
+    selectedMatchIds: string[];
+    isSubmitting: boolean;
+    feedbackMessage: string | null;
+  }>({
+    isOpen: false,
+    sourceTatami: 1,
+    destinationTatami: 2,
+    selectedMatchIds: [],
+    isSubmitting: false,
+    feedbackMessage: null,
+  });
+
+  const handleOpenTransferModal = (sourceTatami: number) => {
+    const col = columns.find((c) => c.tatamiNumber === sourceTatami);
+    const availableUpcoming = col?.upcomingMatches || [];
+    const destinationCandidates = columns
+      .map((c) => c.tatamiNumber)
+      .filter((t) => t !== sourceTatami);
+
+    const defaultDest = destinationCandidates[0] || (sourceTatami === 1 ? 2 : 1);
+
+    setTransferModalState({
+      isOpen: true,
+      sourceTatami,
+      destinationTatami: defaultDest,
+      selectedMatchIds: availableUpcoming.map((m) => m.id),
+      isSubmitting: false,
+      feedbackMessage: null,
+    });
+  };
+
+  const handleToggleSelectMatch = (matchId: string) => {
+    setTransferModalState((prev) => {
+      const isSelected = prev.selectedMatchIds.includes(matchId);
+      return {
+        ...prev,
+        selectedMatchIds: isSelected
+          ? prev.selectedMatchIds.filter((id) => id !== matchId)
+          : [...prev.selectedMatchIds, matchId],
+      };
+    });
+  };
+
+  const handleSelectAllMatches = () => {
+    const col = columns.find((c) => c.tatamiNumber === transferModalState.sourceTatami);
+    const availableUpcoming = col?.upcomingMatches || [];
+    setTransferModalState((prev) => ({
+      ...prev,
+      selectedMatchIds: availableUpcoming.map((m) => m.id),
+    }));
+  };
+
+  const handleDeselectAllMatches = () => {
+    setTransferModalState((prev) => ({
+      ...prev,
+      selectedMatchIds: [],
+    }));
+  };
+
+  const handleConfirmTransfer = async () => {
+    if (transferModalState.selectedMatchIds.length === 0) return;
+    setTransferModalState((prev) => ({ ...prev, isSubmitting: true, feedbackMessage: null }));
+
+    try {
+      const res = await reassignMatchesBatchAction({
+        matchIds: transferModalState.selectedMatchIds,
+        newTatamiNumber: transferModalState.destinationTatami,
+        tournamentId: tournamentId || undefined,
+      });
+
+      if (res.success) {
+        setTransferModalState((prev) => ({
+          ...prev,
+          isSubmitting: false,
+          feedbackMessage: res.message || 'Combates transferidos con éxito.',
+        }));
+        await loadData(false);
+        setTimeout(() => {
+          setTransferModalState((prev) => ({ ...prev, isOpen: false }));
+        }, 1200);
+      } else {
+        setTransferModalState((prev) => ({
+          ...prev,
+          isSubmitting: false,
+          feedbackMessage: res.error || 'Fallo al transferir combates.',
+        }));
+      }
+    } catch (err: any) {
+      setTransferModalState((prev) => ({
+        ...prev,
+        isSubmitting: false,
+        feedbackMessage: err.message || 'Error de conexión.',
+      }));
+    }
+  };
 
   // Cargar todos los tatamis en paralelo
   const loadData = useCallback(
@@ -202,7 +309,7 @@ export function MultiTatamiMonitorView({
                 className="inline-flex items-center space-x-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl transition"
               >
                 <ArrowLeft className="w-4 h-4" />
-                <span>Ir al Sorteo de Llaves</span>
+                <span>Ir al Sorteo</span>
               </Link>
             </div>
           )}
@@ -239,6 +346,19 @@ export function MultiTatamiMonitorView({
 
                   {/* ACCESOS DIRECTOS DE LA COLUMNA */}
                   <div className="flex items-center space-x-1.5">
+                    {/* Botón Transferir Combates Masivo */}
+                    {col.upcomingMatches.length > 0 && columns.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTransferModal(col.tatamiNumber)}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold transition flex items-center space-x-1"
+                        title={`Transferir combates del Tatami ${col.tatamiNumber} a otro tatami`}
+                      >
+                        <ArrowRightLeft className="w-3 h-3" />
+                        <span>Mover</span>
+                      </button>
+                    )}
+
                     <Link
                       href={`/tatami/${col.tatamiNumber}`}
                       target="_blank"
@@ -311,15 +431,6 @@ export function MultiTatamiMonitorView({
                           </span>
                         </div>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleCallMatch(col.activeMatch!.id)}
-                        className="w-full py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider rounded-xl transition flex items-center justify-center space-x-1 shadow"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        <span>Abrir en Mesa de Control</span>
-                      </button>
                     </div>
                   )}
 
@@ -471,6 +582,226 @@ export function MultiTatamiMonitorView({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* MODAL DE TRANSFERENCIA MASIVA DE COMBATES ENTRE TATAMIS */}
+      {transferModalState.isOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl max-w-xl w-full p-6 space-y-5 shadow-2xl flex flex-col max-h-[90vh]">
+            {/* Cabecera del Modal */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <ArrowRightLeft className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">
+                    Transferir Combates desde Tatami #{transferModalState.sourceTatami}
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Reasigna combates pendientes para acelerar el campeonato cuando un tatami termina antes.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTransferModalState((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Selector de Tatami Destino */}
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-wider text-slate-300 block">
+                Selecciona el Tatami Destino:
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {columns
+                  .filter((c) => c.tatamiNumber !== transferModalState.sourceTatami)
+                  .map((c) => {
+                    const isSelected = transferModalState.destinationTatami === c.tatamiNumber;
+                    return (
+                      <button
+                        key={c.tatamiNumber}
+                        type="button"
+                        onClick={() =>
+                          setTransferModalState((prev) => ({
+                            ...prev,
+                            destinationTatami: c.tatamiNumber,
+                          }))
+                        }
+                        className={`px-4 py-2 rounded-xl text-xs font-black transition flex items-center space-x-2 ${
+                          isSelected
+                            ? 'bg-amber-500 text-slate-950 shadow-md ring-2 ring-amber-400'
+                            : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                        }`}
+                      >
+                        <Swords className="w-3.5 h-3.5" />
+                        <span>Tatami #{c.tatamiNumber}</span>
+                        <span className="text-[10px] opacity-80">
+                          ({c.upcomingMatches.length + (c.activeMatch ? 1 : 0)} combates)
+                        </span>
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+
+            {/* Accesos rápidos de selección */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2 pt-1 text-xs">
+              <span className="font-bold text-slate-300">
+                Combates seleccionados: {transferModalState.selectedMatchIds.length}
+              </span>
+              <div className="flex items-center space-x-3">
+                <button
+                  type="button"
+                  onClick={handleSelectAllMatches}
+                  className="text-amber-400 hover:text-amber-300 font-bold transition flex items-center space-x-1"
+                >
+                  <CheckSquare className="w-3.5 h-3.5" />
+                  <span>Todos</span>
+                </button>
+                <span className="text-slate-600">•</span>
+                <button
+                  type="button"
+                  onClick={handleDeselectAllMatches}
+                  className="text-slate-400 hover:text-slate-300 font-bold transition flex items-center space-x-1"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span>Ninguno</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Lista Scrollable de Combates Pendientes */}
+            <div className="space-y-2 overflow-y-auto flex-1 pr-1 max-h-[40vh]">
+              {(() => {
+                const col = columns.find((c) => c.tatamiNumber === transferModalState.sourceTatami);
+                const matches = col?.upcomingMatches || [];
+
+                if (matches.length === 0) {
+                  return (
+                    <div className="py-8 text-center text-slate-500 text-xs">
+                      No hay combates pendientes disponibles en este tatami.
+                    </div>
+                  );
+                }
+
+                return matches.map((m) => {
+                  const isChecked = transferModalState.selectedMatchIds.includes(m.id);
+                  return (
+                    <div
+                      key={m.id}
+                      onClick={() => handleToggleSelectMatch(m.id)}
+                      className={`p-3 rounded-2xl border transition cursor-pointer flex items-center justify-between gap-3 ${
+                        isChecked
+                          ? 'bg-amber-950/20 border-amber-500/50 text-white'
+                          : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3 truncate">
+                        <div
+                          className={`w-5 h-5 rounded-md flex items-center justify-center border transition flex-shrink-0 ${
+                            isChecked
+                              ? 'bg-amber-500 border-amber-400 text-slate-950'
+                              : 'bg-slate-900 border-slate-700'
+                          }`}
+                        >
+                          {isChecked && <CheckSquare className="w-3.5 h-3.5" />}
+                        </div>
+                        <div className="truncate">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-xs font-mono font-bold text-amber-400">
+                              #{m.match_number}
+                            </span>
+                            <span className="text-xs font-bold text-slate-200 truncate">
+                              {m.category_name}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              ({m.round_name})
+                            </span>
+                          </div>
+                          <div className="text-xs truncate text-slate-300 mt-0.5">
+                            <span className="font-medium">{m.white_athlete_name}</span>
+                            <span className="text-slate-500 mx-1.5">vs</span>
+                            <span className="font-medium">{m.blue_athlete_name}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex-shrink-0 ${
+                          m.status === 'SCHEDULED'
+                            ? 'bg-blue-950/60 text-blue-400 border-blue-800'
+                            : 'bg-slate-950 text-slate-500 border-slate-800'
+                        }`}
+                      >
+                        {m.status}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            {/* Feedback Message */}
+            {transferModalState.feedbackMessage && (
+              <div
+                className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                  transferModalState.feedbackMessage.includes('éxito')
+                    ? 'bg-emerald-950/60 border border-emerald-500/50 text-emerald-300'
+                    : 'bg-red-950/60 border border-red-500/50 text-red-300'
+                }`}
+              >
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{transferModalState.feedbackMessage}</span>
+              </div>
+            )}
+
+            {/* Botones de Acción */}
+            <div className="flex items-center space-x-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setTransferModalState((prev) => ({ ...prev, isOpen: false }))}
+                disabled={transferModalState.isSubmitting}
+                className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmTransfer}
+                disabled={
+                  transferModalState.isSubmitting ||
+                  transferModalState.selectedMatchIds.length === 0
+                }
+                className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition shadow-lg flex items-center justify-center space-x-1.5 ${
+                  transferModalState.selectedMatchIds.length > 0 &&
+                  !transferModalState.isSubmitting
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                {transferModalState.isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Transfiriendo...</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowRightLeft className="w-4 h-4" />
+                    <span>
+                      Transferir {transferModalState.selectedMatchIds.length} a Tatami #
+                      {transferModalState.destinationTatami}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

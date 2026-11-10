@@ -217,7 +217,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const loadCategoryBracket = useCallback(
     async (catId: string) => {
       try {
-        const res = await getCategoryBracketAction(tournament.id, catId);
+        const res = await getCategoryBracketAction(catId, tournament.id);
         if (res.success && res.result) {
           setCategoryBrackets((prev) => ({ ...prev, [catId]: res.result! }));
         }
@@ -795,7 +795,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             }`}
           >
             <Trophy className="w-4 h-4" />
-            <span>Sorteo y Llaves</span>
+            <span>Sorteo</span>
           </button>
 
           <button

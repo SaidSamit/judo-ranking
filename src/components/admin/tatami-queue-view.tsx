@@ -329,7 +329,7 @@ export function TatamiQueueView({
                   className="inline-flex items-center space-x-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl transition shadow"
                 >
                   <ArrowLeft className="w-4 h-4" />
-                  <span>Ir a Sorteo y Generación de Llaves</span>
+                  <span>Ir al Sorteo</span>
                 </Link>
               </div>
             )}

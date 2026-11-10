@@ -227,7 +227,7 @@ export async function finishMatchAndPropagateWinnerAction(
           // Obtener combates clave de la categoría para resolver la rama estructural (Rama A vs Rama B)
           const { data: catMatches } = await supabase
             .from('matches')
-            .select('id, round, next_match_id, next_match_slot')
+            .select('id, round, next_match_id, next_match_slot, white_athlete_id, blue_athlete_id, status, winner_id')
             .eq('category_id', catId);
 
           const sfMatches = (catMatches || []).filter((m) => (m.round || '').toUpperCase().startsWith('SF'));
@@ -240,9 +240,19 @@ export async function finishMatchAndPropagateWinnerAction(
           // El slot en repechaje replica el slot de entrada a semifinales
           const targetSlot = rawMatch?.next_match_slot === 'WHITE' ? 'white_athlete_id' : 'blue_athlete_id';
 
+          // Detectar si el combate de cuartos opuesto en esta misma rama fue un BYE (sin rival)
+          const targetSF = isRamaA ? sf1 : sf2;
+          const oppositeQF = (catMatches || []).find(
+            (m) =>
+              (m.round || '').toUpperCase().startsWith('QF') &&
+              m.next_match_id === targetSF?.id &&
+              m.id !== rawMatch.id
+          );
+          const isOppositeQFBye = !oppositeQF || !oppositeQF.white_athlete_id || !oppositeQF.blue_athlete_id;
+
           const { data: repMatch } = await supabase
             .from('matches')
-            .select('id, white_athlete_id, blue_athlete_id, status')
+            .select('id, white_athlete_id, blue_athlete_id, status, next_match_id, next_match_slot')
             .eq('category_id', catId)
             .eq('round', targetRepRound)
             .maybeSingle();
@@ -253,10 +263,41 @@ export async function finishMatchAndPropagateWinnerAction(
               updated_at: nowIso,
             };
             const oppositeSlot = targetSlot === 'white_athlete_id' ? repMatch.blue_athlete_id : repMatch.white_athlete_id;
+
             if (oppositeSlot) {
+              // Ambos judokas definidos: combate listo para disputarse
               repUpdate.status = 'SCHEDULED';
+              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
+            } else if (isOppositeQFBye) {
+              // El combate opuesto fue un BYE (sin perdedor): el judoka gana automáticamente por BYE y avanza a Bronce
+              repUpdate.winner_id = loserId;
+              repUpdate.status = 'FINISHED';
+              repUpdate.win_reason = 'BYE';
+              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
+
+              // Propagación directa hacia la disputa de Bronce
+              const targetBronzeRound = isRamaA ? 'BRONZE_1' : 'BRONZE_2';
+              const { data: bronzeMatch } = await supabase
+                .from('matches')
+                .select('id, white_athlete_id, blue_athlete_id, status')
+                .eq('category_id', catId)
+                .eq('round', targetBronzeRound)
+                .maybeSingle();
+
+              if (bronzeMatch) {
+                const bronzeUpdate: Record<string, any> = {
+                  blue_athlete_id: loserId,
+                  updated_at: nowIso,
+                };
+                if (bronzeMatch.white_athlete_id) {
+                  bronzeUpdate.status = 'SCHEDULED';
+                }
+                await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
+              }
+            } else {
+              // Esperando que finalice el combate opuesto
+              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
             }
-            await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
           }
         } else if (roundCode === 'SF' || roundCode.startsWith('SF')) {
           // EN SEMIFINALES (REGLA OFICIAL IJF):
