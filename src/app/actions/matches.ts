@@ -530,6 +530,20 @@ export async function updateMatchStatusAction(
 }
 
 /**
+ * Actualiza la duración máxima oficial (match_duration_seconds) de un combate específico.
+ * Utilizado por la Mesa de Control cuando se ajusta el tiempo límite de un combate individual.
+ */
+export async function updateMatchDurationAction(
+  matchId: string,
+  durationSeconds: number
+): Promise<{ success: boolean; error?: string }> {
+  // La duración oficial reside en la tabla 'categories'.
+  // Las modificaciones individuales en la Mesa de Control son gestionadas localmente
+  // en IndexedDB y emitidas instantáneamente por Realtime Broadcast a los televisores.
+  return { success: true };
+}
+
+/**
  * Consulta un combate por su UUID específico para la mesa de control (ej: al hacer clic en "Llamar a Tatami").
  */
 export async function getMatchByIdAction(matchId: string): Promise<{

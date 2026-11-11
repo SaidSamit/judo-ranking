@@ -63,33 +63,26 @@ export function MultiTatamiMonitorView({
   const [transferModalState, setTransferModalState] = useState<{
     isOpen: boolean;
     sourceTatami: number;
-    destinationTatami: number;
+    destinationTatami: number | null;
     selectedMatchIds: string[];
     isSubmitting: boolean;
     feedbackMessage: string | null;
   }>({
     isOpen: false,
     sourceTatami: 1,
-    destinationTatami: 2,
+    destinationTatami: null,
     selectedMatchIds: [],
     isSubmitting: false,
     feedbackMessage: null,
   });
 
   const handleOpenTransferModal = (sourceTatami: number) => {
-    const col = columns.find((c) => c.tatamiNumber === sourceTatami);
-    const availableUpcoming = col?.upcomingMatches || [];
-    const destinationCandidates = columns
-      .map((c) => c.tatamiNumber)
-      .filter((t) => t !== sourceTatami);
-
-    const defaultDest = destinationCandidates[0] || (sourceTatami === 1 ? 2 : 1);
-
+    // Por defecto nada seleccionado (tatami destino null y lista de combates vacía)
     setTransferModalState({
       isOpen: true,
       sourceTatami,
-      destinationTatami: defaultDest,
-      selectedMatchIds: availableUpcoming.map((m) => m.id),
+      destinationTatami: null,
+      selectedMatchIds: [],
       isSubmitting: false,
       feedbackMessage: null,
     });
@@ -124,7 +117,12 @@ export function MultiTatamiMonitorView({
   };
 
   const handleConfirmTransfer = async () => {
-    if (transferModalState.selectedMatchIds.length === 0) return;
+    if (
+      !transferModalState.destinationTatami ||
+      transferModalState.selectedMatchIds.length === 0
+    ) {
+      return;
+    }
     setTransferModalState((prev) => ({ ...prev, isSubmitting: true, feedbackMessage: null }));
 
     try {
@@ -776,19 +774,31 @@ export function MultiTatamiMonitorView({
                 onClick={handleConfirmTransfer}
                 disabled={
                   transferModalState.isSubmitting ||
+                  !transferModalState.destinationTatami ||
                   transferModalState.selectedMatchIds.length === 0
                 }
                 className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition shadow-lg flex items-center justify-center space-x-1.5 ${
+                  transferModalState.destinationTatami &&
                   transferModalState.selectedMatchIds.length > 0 &&
                   !transferModalState.isSubmitting
-                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
-                    : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20 cursor-pointer'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
                 }`}
               >
                 {transferModalState.isSubmitting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>Transfiriendo...</span>
+                  </>
+                ) : !transferModalState.destinationTatami ? (
+                  <>
+                    <ArrowRightLeft className="w-4 h-4" />
+                    <span>Selecciona Tatami Destino</span>
+                  </>
+                ) : transferModalState.selectedMatchIds.length === 0 ? (
+                  <>
+                    <ArrowRightLeft className="w-4 h-4" />
+                    <span>Selecciona Combates a Transferir</span>
                   </>
                 ) : (
                   <>

@@ -31,6 +31,8 @@ interface TournamentBracketsTabProps {
   onSetPreferredFormat5: (categoryId: string, format: 'ROUND_ROBIN' | 'DOUBLE_POOL_5') => void;
   isReassigningTatami: boolean;
   onReassignTatami: (categoryId: string, tatamiNum: number) => void;
+  isUpdatingCategoryDuration?: boolean;
+  onUpdateCategoryDuration?: (categoryId: string, durationSeconds: number) => void;
   isGeneratingBrackets: boolean;
   onGenerateBracket: (category: CategoryBracketStatus) => void;
   onSaveBracketModification: (bracket: BracketResult) => Promise<void> | void;
@@ -50,6 +52,8 @@ export function TournamentBracketsTab({
   onSetPreferredFormat5,
   isReassigningTatami,
   onReassignTatami,
+  isUpdatingCategoryDuration = false,
+  onUpdateCategoryDuration,
   isGeneratingBrackets,
   onGenerateBracket,
   onSaveBracketModification,
@@ -216,6 +220,41 @@ export function TournamentBracketsTab({
                       Tatami {tNum}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              {/* SELECTOR DE DURACIÓN DE COMBATES PARA TODA LA CATEGORÍA (DIRECTOR) */}
+              <div className="flex items-center space-x-2 mt-2">
+                <span className="text-xs text-slate-400 font-medium">Duración Categoría:</span>
+                <div className="flex items-center space-x-1">
+                  {[
+                    { label: '2 min', sec: 120 },
+                    { label: '3 min', sec: 180 },
+                    { label: '4 min', sec: 240 },
+                    { label: '5 min', sec: 300 },
+                  ].map((preset) => {
+                    const isSelected =
+                      (activeCategory.match_duration_seconds || 240) === preset.sec;
+                    return (
+                      <button
+                        key={preset.sec}
+                        type="button"
+                        onClick={() =>
+                          onUpdateCategoryDuration &&
+                          onUpdateCategoryDuration(activeCategory.id, preset.sec)
+                        }
+                        disabled={isUpdatingCategoryDuration || isSelected}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                          isSelected
+                            ? 'bg-amber-500 text-slate-950 font-black shadow'
+                            : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 border border-slate-700'
+                        } ${isUpdatingCategoryDuration ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title={`Fijar ${preset.label} para todos los combates de ${activeCategory.name}`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

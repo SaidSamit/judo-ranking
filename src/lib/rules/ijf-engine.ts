@@ -38,6 +38,7 @@ export function projectMatchState(events: MatchEvent[]): MatchProjection {
   let win_reason: string | null = null;
   let has_direct_hansoku_make = false;
   let direct_hansoku_target: CombatantColor | null = null;
+  let is_golden_score = false;
 
   // Filtrar solo eventos activos (que no hayan sido anulados por Undo)
   const activeEvents = events
@@ -50,19 +51,30 @@ export function projectMatchState(events: MatchEvent[]): MatchProjection {
     const opponentColor: CombatantColor = event.target === 'WHITE' ? 'BLUE' : 'WHITE';
 
     switch (event.action) {
+      case 'START_GOLDEN_SCORE':
+        is_golden_score = true;
+        winner = null;
+        win_reason = null;
+        break;
+
+      case 'STOP_GOLDEN_SCORE':
+        is_golden_score = false;
+        break;
+
       case 'ADD_IPPON':
         targetScore.ippon = 1;
         winner = event.target;
-        win_reason = 'IPPON';
+        win_reason = is_golden_score ? 'GOLDEN_SCORE (IPPON)' : 'IPPON';
         break;
 
       case 'ADD_WAZA_ARI':
         targetScore.wazaari += 1;
-        // Regla IJF: 2 Waza-aris equivalen a Ippon (Waza-ari-awasete-Ippon)
-        // Absorción Visual: Al completarse el 2º Waza-ari, se corona el Ippon y se resetea
-        // wazaari a 0 exclusivamente en la proyección. Los eventos originales ADD_WAZA_ARI
-        // permanecen intactos en la pila para permitir "Undo" (Shift + W) de vuelta a 1 Waza-ari.
-        if (targetScore.wazaari >= 2) {
+        // Regla: En Golden Score, el primer Waza-ari otorga victoria inmediata por muerte súbita
+        if (is_golden_score) {
+          winner = event.target;
+          win_reason = 'GOLDEN_SCORE (WAZA-ARI)';
+        } else if (targetScore.wazaari >= 2) {
+          // 2 Waza-aris equivalen a Ippon (Waza-ari-awasete-Ippon)
           targetScore.ippon = 1;
           targetScore.wazaari = 0;
           winner = event.target;
@@ -72,16 +84,23 @@ export function projectMatchState(events: MatchEvent[]): MatchProjection {
 
       case 'ADD_YUKO':
         targetScore.yuko += 1;
+        // En Golden Score, el primer puntaje técnico (incluido Yuko) sella la victoria
+        if (is_golden_score) {
+          winner = event.target;
+          win_reason = 'GOLDEN_SCORE (YUKO)';
+        }
         break;
 
       case 'ADD_SHIDO':
         targetScore.shido += 1;
-        // Regla IJF: 3 Shidos = Hansoku-make INDIRECTO automático (Técnico por defecto, NO requiere modal)
+        // Regla: 3 Shidos = Hansoku-make INDIRECTO automático (Técnico por defecto, NO requiere modal)
         if (targetScore.shido >= 3) {
           targetScore.has_hansoku_make = true;
           targetScore.has_hansoku_make_indirect = true;
           winner = opponentColor;
-          win_reason = 'HANSOKU_MAKE_INDIRECT (3 SHIDOS)';
+          win_reason = is_golden_score
+            ? 'GOLDEN_SCORE (HANSOKU-MAKE)'
+            : 'HANSOKU_MAKE_INDIRECT (3 SHIDOS)';
         }
         break;
 
@@ -90,7 +109,9 @@ export function projectMatchState(events: MatchEvent[]): MatchProjection {
         targetScore.has_hansoku_make = true;
         targetScore.has_hansoku_make_direct = true;
         winner = opponentColor;
-        win_reason = 'HANSOKU_MAKE_DIRECT';
+        win_reason = is_golden_score
+          ? 'GOLDEN_SCORE (HANSOKU-MAKE DIRECTO)'
+          : 'HANSOKU_MAKE_DIRECT';
         has_direct_hansoku_make = true;
         direct_hansoku_target = event.target;
         break;
@@ -140,6 +161,7 @@ export function projectMatchState(events: MatchEvent[]): MatchProjection {
     is_mathematical_victory,
     has_direct_hansoku_make,
     direct_hansoku_target,
+    is_golden_score,
   };
 }
 

@@ -27,6 +27,7 @@ export interface CategoryBracketStatus {
   dsq_count: number;
   is_weigh_in_closed: boolean;
   matches_generated: boolean;
+  match_duration_seconds?: number;
   bracket_type?: 'BEST_OF_3' | 'ROUND_ROBIN' | 'DOUBLE_POOL_5' | 'SINGLE_ELIMINATION' | 'UNCONTESTED' | 'INSUFFICIENT';
 }
 
@@ -66,7 +67,7 @@ export async function getTournamentCategoriesStatusAction(
     // 2. Consultar categorías del torneo
     const { data: categories, error: catErr } = await supabase
       .from('categories')
-      .select('id, name, age_group, gender, assigned_tatami_number')
+      .select('id, name, age_group, gender, assigned_tatami_number, match_duration_seconds')
       .eq('tournament_id', targetTourId)
       .order('name', { ascending: true });
 
@@ -178,6 +179,7 @@ export async function getTournamentCategoriesStatusAction(
         dsq_count: dsq,
         is_weigh_in_closed: isClosed,
         matches_generated: matchesByCategory.has(cat.id),
+        match_duration_seconds: (cat as any).match_duration_seconds || 240,
         bracket_type: bracketType,
       };
     });
@@ -1769,5 +1771,38 @@ export async function reassignMatchesBatchAction(params: {
   } catch (err: any) {
     console.error('[reassignMatchesBatchAction] Error:', err);
     return { success: false, error: err.message || 'Error al reasignar combates.' };
+  }
+}
+
+/**
+ * Actualiza la duración oficial (match_duration_seconds) de una categoría completa
+ * y de todos sus combates en estado SCHEDULED.
+ * Exclusivo para el Director del Torneo en la pestaña de Sorteo / Categorías.
+ */
+export async function updateCategoryMatchDurationAction(params: {
+  categoryId: string;
+  durationSeconds: number;
+}): Promise<{ success: boolean; error?: string; message?: string }> {
+  try {
+    const supabase = createAdminClient();
+
+    // 1. Actualizar match_duration_seconds en la categoría (fuente única de verdad en Supabase)
+    const { error: catErr } = await supabase
+      .from('categories')
+      .update({ match_duration_seconds: params.durationSeconds })
+      .eq('id', params.categoryId);
+
+    if (catErr) {
+      return { success: false, error: catErr.message };
+    }
+
+    const mins = Math.floor(params.durationSeconds / 60);
+    return {
+      success: true,
+      message: `Duración de la categoría actualizada a ${mins} min en la base de datos.`,
+    };
+  } catch (err: any) {
+    console.error('[updateCategoryMatchDurationAction] Error:', err);
+    return { success: false, error: err.message || 'Error al actualizar duración de la categoría.' };
   }
 }

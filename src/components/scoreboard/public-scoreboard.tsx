@@ -189,11 +189,15 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
           {/* Cronómetro Principal */}
           <div className="w-full text-center space-y-2 pt-4">
             <span className="text-sm uppercase font-mono tracking-widest text-slate-400 font-bold">
-              TIEMPO
+              {matchData.is_golden_score ? 'GOLDEN SCORE' : 'TIEMPO'}
             </span>
             <div
               className={`text-7xl lg:text-8xl font-black font-mono tracking-tighter ${
-                matchData.match_time_remaining === 0
+                matchData.is_golden_score
+                  ? matchData.is_clock_running
+                    ? 'text-amber-300'
+                    : 'text-amber-500'
+                  : matchData.match_time_remaining === 0
                   ? 'text-red-500 animate-pulse'
                   : matchData.is_clock_running
                   ? 'text-emerald-400'

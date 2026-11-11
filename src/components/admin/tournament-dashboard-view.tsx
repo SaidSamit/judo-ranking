@@ -58,6 +58,7 @@ import {
   reassignCategoryTatamiAction,
   createTournamentCategoryAction,
   getTournamentPodiumsAction,
+  updateCategoryMatchDurationAction,
   CategoryPodiumResult,
 } from '@/app/actions/brackets';
 import {
@@ -141,6 +142,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const [loadingBrackets, setLoadingBrackets] = useState(false);
   const [isGeneratingBrackets, setIsGeneratingBrackets] = useState(false);
   const [isReassigningTatami, setIsReassigningTatami] = useState(false);
+  const [isUpdatingCategoryDuration, setIsUpdatingCategoryDuration] = useState(false);
   const [isNewCategoryModalOpen, setIsNewCategoryModalOpen] = useState(false);
   const [preferredFormat5ByCategory, setPreferredFormat5ByCategory] = useState<
     Record<string, 'ROUND_ROBIN' | 'DOUBLE_POOL_5'>
@@ -552,6 +554,31 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   };
 
+  const handleUpdateCategoryDuration = async (categoryId: string, durationSeconds: number) => {
+    setIsUpdatingCategoryDuration(true);
+    try {
+      const res = await updateCategoryMatchDurationAction({
+        categoryId,
+        durationSeconds,
+      });
+      if (res.success) {
+        setCategories((prev) =>
+          prev.map((c) =>
+            c.id === categoryId ? { ...c, match_duration_seconds: durationSeconds } : c
+          )
+        );
+        setFeedback({ type: 'success', text: res.message || 'Duración de la categoría actualizada.' });
+        await loadBrackets();
+      } else {
+        setFeedback({ type: 'error', text: res.message || res.error || 'Error al actualizar duración.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error al actualizar duración.' });
+    } finally {
+      setIsUpdatingCategoryDuration(false);
+    }
+  };
+
   const handleCreateCategory = async (params: {
     name: string;
     ageGroup: string;
@@ -936,6 +963,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           }
           isReassigningTatami={isReassigningTatami}
           onReassignTatami={handleReassignTatami}
+          isUpdatingCategoryDuration={isUpdatingCategoryDuration}
+          onUpdateCategoryDuration={handleUpdateCategoryDuration}
           isGeneratingBrackets={isGeneratingBrackets}
           onGenerateBracket={handleGenerateBracket}
           onSaveBracketModification={handleSaveBracketModification}
