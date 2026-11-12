@@ -20,6 +20,7 @@
 'use server';
 
 import { createAdminClient } from '@/lib/supabase/admin';
+import { isWeightValidForCategory } from '@/lib/rules/judo-categories';
 
 export interface DraftAthletePayload {
   id?: string;
@@ -541,6 +542,13 @@ export async function addAthleteToAdditionalCategoryAction(params: {
       return { success: false, message: 'Faltan parámetros para la inscripción adicional.' };
     }
 
+    if (!targetCatId && targetCatName && targetCatName.length < 3) {
+      return {
+        success: false,
+        message: 'El nombre de la categoría debe tener al menos 3 caracteres.',
+      };
+    }
+
     // Si no tenemos targetCatId pero sí targetCatName, buscar o crear la categoría
     if (!targetCatId && targetCatName) {
       const { data: foundCat } = await supabase
@@ -631,6 +639,29 @@ export async function addAthleteToAdditionalCategoryAction(params: {
       .eq('id', athleteId)
       .maybeSingle();
 
+    // 2.5. Si el judoka ya tiene peso registrado en este campeonato, heredarlo y validar automáticamente
+    const { data: existingWeighedReg } = await supabase
+      .from('tournament_registrations')
+      .select('actual_weight, weigh_in_status, weigh_in_at')
+      .eq('tournament_id', tournamentId)
+      .eq('athlete_id', athleteId)
+      .not('actual_weight', 'is', null)
+      .gt('actual_weight', 0)
+      .order('weigh_in_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let inheritedWeight: number | null = null;
+    let initialStatus: 'PENDING' | 'PASSED' | 'DSQ' = 'PENDING';
+    let inheritedWeighInAt: string | null = null;
+
+    if (existingWeighedReg && typeof existingWeighedReg.actual_weight === 'number' && existingWeighedReg.actual_weight > 0) {
+      inheritedWeight = existingWeighedReg.actual_weight;
+      const { valid } = isWeightValidForCategory(inheritedWeight, categoryData.name);
+      initialStatus = valid ? 'PASSED' : 'DSQ';
+      inheritedWeighInAt = existingWeighedReg.weigh_in_at || new Date().toISOString();
+    }
+
     // 3. Insertar la nueva inscripción en la categoría adicional
     const { data: newReg, error: insertError } = await supabase
       .from('tournament_registrations')
@@ -641,7 +672,9 @@ export async function addAthleteToAdditionalCategoryAction(params: {
         athlete_id: athleteId,
         club_id: athleteData?.club_id || null,
         registered_weight: registeredWeight || null,
-        weigh_in_status: 'PENDING',
+        actual_weight: inheritedWeight,
+        weigh_in_status: initialStatus,
+        weigh_in_at: inheritedWeighInAt,
       })
       .select('id')
       .single();
@@ -673,6 +706,41 @@ export async function addAthleteToAdditionalCategoryAction(params: {
   } catch (err: any) {
     console.error('[addAthleteToAdditionalCategoryAction] Error:', err);
     return { success: false, message: 'Error interno al registrar categoría adicional.' };
+  }
+}
+
+/**
+ * Elimina la inscripción puntual de un judoka en una categoría dentro del campeonato.
+ */
+export async function removeAthleteFromCategoryAction(params: {
+  registrationId: string;
+  tournamentId: string;
+}): Promise<{ success: boolean; message: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { registrationId, tournamentId } = params;
+
+    if (!registrationId || !tournamentId) {
+      return { success: false, message: 'Faltan parámetros para quitar la inscripción.' };
+    }
+
+    const { error } = await supabase
+      .from('tournament_registrations')
+      .delete()
+      .eq('id', registrationId)
+      .eq('tournament_id', tournamentId);
+
+    if (error) {
+      return { success: false, message: `Error al quitar judoka de la categoría: ${error.message}` };
+    }
+
+    return {
+      success: true,
+      message: 'Judoka removido de la categoría exitosamente.',
+    };
+  } catch (err: any) {
+    console.error('[removeAthleteFromCategoryAction] Error:', err);
+    return { success: false, message: 'Error interno al remover inscripción.' };
   }
 }
 

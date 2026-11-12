@@ -11,6 +11,42 @@ interface ScoreboardPageProps {
 export default async function ScoreboardPage({ params }: ScoreboardPageProps) {
   const { id } = await params;
 
+  // 0. Modo Demostración aislado: conectar exclusivamente al canal 'tatami-demo' sin consultar campeonatos reales
+  if (id.toLowerCase() === 'demo') {
+    const demoPayload: BroadcastMatchPayload = {
+      match_id: 'demo-match',
+      tatami_number: 0,
+      match_number: 0,
+      category_name: 'Mesa de Demostración (Modo Práctica)',
+      white_athlete_name: 'Judoka Blanco (Demo)',
+      white_club_name: 'Club Shiai',
+      blue_athlete_name: 'Judoka Azul (Demo)',
+      blue_club_name: 'Club Nippon',
+      match_time_remaining: 240,
+      match_duration_seconds: 240,
+      is_clock_running: false,
+      active_osaekomi: null,
+      osaekomi_seconds: 0,
+      is_golden_score: false,
+      match_status: 'SCHEDULED',
+      projection: {
+        white_score: createInitialScore(),
+        blue_score: createInitialScore(),
+        is_clock_running: false,
+        active_osaekomi: null,
+        osaekomi_seconds: 0,
+        winner: null,
+        win_reason: null,
+        is_mathematical_victory: false,
+        has_direct_hansoku_make: false,
+        direct_hansoku_target: null,
+      },
+      timestamp: Date.now(),
+    };
+
+    return <PublicScoreboard initialPayload={demoPayload} channelName="tatami-demo" isDemoMode={true} />;
+  }
+
   // Extraer número de tatami si el ID es 'tatami-1' o similar, o usar canal directo
   const tatamiMatch = id.match(/tatami-(\d+)/i);
   const tatamiNumber = tatamiMatch ? parseInt(tatamiMatch[1], 10) : 1;

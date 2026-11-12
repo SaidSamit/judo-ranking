@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Scale, RefreshCw, Search } from 'lucide-react';
 import {
   parseWeightLimitFromCategory,
@@ -18,12 +18,18 @@ interface TournamentWeighInTabProps {
   weighInCategoryFilter: string;
   onWeighInCategoryFilterChange: (val: string) => void;
   weighInCategoriesList: string[];
-  filteredWeighInAthletes: WeighInAthlete[];
+  weighInAthletes: WeighInAthlete[];
   weightInputs: Record<string, string>;
-  onWeightInputChange: (regId: string, val: string) => void;
+  onWeightInputChange: (athleteKey: string, val: string) => void;
   savingWeightId: string | null;
-  onRecordWeight: (ath: WeighInAthlete) => void;
-  onReclassifyAthlete: (ath: WeighInAthlete, suggestedCat: string) => void;
+  onRecordWeight: (ath: WeighInAthlete, explicitWeight?: number) => void;
+  onReclassifyAthlete: (ath: WeighInAthlete, suggestedCat: string, explicitWeight?: number) => void;
+}
+
+interface GroupedWeighInAthlete {
+  athleteKey: string;
+  primary: WeighInAthlete;
+  registrations: WeighInAthlete[];
 }
 
 export function TournamentWeighInTab({
@@ -35,13 +41,53 @@ export function TournamentWeighInTab({
   weighInCategoryFilter,
   onWeighInCategoryFilterChange,
   weighInCategoriesList,
-  filteredWeighInAthletes,
+  weighInAthletes,
   weightInputs,
   onWeightInputChange,
   savingWeightId,
   onRecordWeight,
   onReclassifyAthlete,
 }: TournamentWeighInTabProps) {
+  // 1. Agrupar inscripciones por competidor (athlete_id) para mostrarlo UNA SOLA VEZ en báscula
+  const groupedAthletes = useMemo<GroupedWeighInAthlete[]>(() => {
+    const map = new Map<string, GroupedWeighInAthlete>();
+
+    weighInAthletes.forEach((reg) => {
+      const key = reg.athlete_id || reg.registration_id;
+      const existing = map.get(key);
+      if (existing) {
+        existing.registrations.push(reg);
+      } else {
+        map.set(key, {
+          athleteKey: key,
+          primary: reg,
+          registrations: [reg],
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [weighInAthletes]);
+
+  // 2. Aplicar búsqueda y filtro de categoría sobre los competidores agrupados
+  const filteredGroups = useMemo(() => {
+    const q = weighInSearch.trim().toLowerCase();
+    return groupedAthletes.filter(({ primary, registrations }) => {
+      const matchesSearch =
+        !q ||
+        primary.name.toLowerCase().includes(q) ||
+        primary.rut_dni.toLowerCase().includes(q) ||
+        primary.club_name.toLowerCase().includes(q) ||
+        registrations.some((r) => r.category_name.toLowerCase().includes(q));
+
+      const matchesCat =
+        weighInCategoryFilter === 'ALL' ||
+        registrations.some((r) => r.category_name === weighInCategoryFilter);
+
+      return matchesSearch && matchesCat;
+    });
+  }, [groupedAthletes, weighInSearch, weighInCategoryFilter]);
+
   return (
     <div className="space-y-6">
       <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
@@ -50,10 +96,12 @@ export function TournamentWeighInTab({
             <h2 className="text-lg font-black text-white flex items-center space-x-2">
               <Scale className="w-5 h-5 text-amber-400" />
               <span>Estación de Pesaje - {tournamentName}</span>
+              <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-full border border-slate-800">
+                {groupedAthletes.length} competidores
+              </span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Registra el peso en báscula. Si el judoka excede su división, el sistema sugerirá la
-              categoría inmediata superior para reclasificación con un clic.
+              Cada competidor aparece una sola vez en báscula. Al guardar su peso real, el sistema lo sincroniza y valida automáticamente en todas sus categorías inscritas.
             </p>
           </div>
 
@@ -76,7 +124,7 @@ export function TournamentWeighInTab({
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
             <input
               type="text"
-              placeholder="Buscar por RUT, Nombre o Club..."
+              placeholder="Buscar por RUT, Nombre, Club o Categoría..."
               value={weighInSearch}
               onChange={(e) => onWeighInSearchChange(e.target.value)}
               className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
@@ -99,13 +147,13 @@ export function TournamentWeighInTab({
           </div>
         </div>
 
-        {/* TABLA DE PESAJE */}
-        {filteredWeighInAthletes.length === 0 ? (
+        {/* TABLA DE PESAJE UNIFICADA POR COMPETIDOR */}
+        {filteredGroups.length === 0 ? (
           <div className="p-12 text-center space-y-2 text-slate-500">
             <Scale className="w-10 h-10 mx-auto text-slate-600" />
             <p className="text-sm font-bold">No hay judokas registrados para el pesaje.</p>
             <p className="text-xs">
-              Ve a la pestaña "Nómina & Inscripciones" para registrar judokas en este campeonato.
+              Ve a la pestaña &quot;Inscripciones&quot; para registrar judokas en este campeonato.
             </p>
           </div>
         ) : (
@@ -114,47 +162,81 @@ export function TournamentWeighInTab({
               <thead className="bg-slate-950 text-slate-400 font-bold border-b border-slate-800">
                 <tr>
                   <th className="p-3">Judoka</th>
-                  <th className="p-3">Categoría Asignada</th>
+                  <th className="p-3">Categorías Asignadas</th>
                   <th className="p-3">Límite de Peso</th>
                   <th className="p-3 text-center">Peso Real (kg)</th>
-                  <th className="p-3 text-center">Estado</th>
+                  <th className="p-3 text-center">Validación por Categoría</th>
                   <th className="p-3 text-right">Acción</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-medium">
-                {filteredWeighInAthletes.map((ath) => {
+                {filteredGroups.map(({ athleteKey, primary, registrations }) => {
+                  const existingSavedWeight =
+                    registrations.find((r) => typeof r.actual_weight === 'number' && r.actual_weight > 0)
+                      ?.actual_weight ?? primary.actual_weight;
+
                   const inputVal =
-                    weightInputs[ath.registration_id] ?? (ath.actual_weight?.toString() || '');
+                    weightInputs[athleteKey] ??
+                    weightInputs[primary.registration_id] ??
+                    (existingSavedWeight ? String(existingSavedWeight) : '');
                   const numVal = parseFloat(inputVal);
-                  const parsedLimit = parseWeightLimitFromCategory(ath.category_name);
                   const hasWeight = !isNaN(numVal) && numVal > 0;
-                  const weightCheck = hasWeight
-                    ? isWeightValidForCategory(numVal, ath.category_name)
-                    : null;
-                  const isOverweight = weightCheck ? !weightCheck.valid : false;
-                  const suggestedCat = isOverweight
-                    ? getSuggestedUpperCategory(ath.category_name, numVal)
-                    : null;
+
+                  // Evaluar cada categoría individualmente contra el peso ingresado/guardado
+                  const regEvaluations = registrations.map((reg) => {
+                    const parsedLimit = parseWeightLimitFromCategory(reg.category_name);
+                    const weightCheck = hasWeight
+                      ? isWeightValidForCategory(numVal, reg.category_name)
+                      : null;
+                    const isOverweight = weightCheck ? !weightCheck.valid : false;
+                    const suggestedCat = isOverweight
+                      ? getSuggestedUpperCategory(reg.category_name, numVal)
+                      : null;
+
+                    return {
+                      reg,
+                      parsedLimit,
+                      isOverweight,
+                      suggestedCat,
+                    };
+                  });
+
+                  const anyOverweight = regEvaluations.some((ev) => ev.isOverweight);
+                  const isSavingThisAthlete =
+                    savingWeightId === athleteKey ||
+                    registrations.some((r) => r.registration_id === savingWeightId);
 
                   return (
-                    <tr key={ath.registration_id} className="hover:bg-slate-800/40 transition">
+                    <tr key={athleteKey} className="hover:bg-slate-800/40 transition">
                       <td className="p-3">
-                        <span className="font-bold text-white block">{ath.name}</span>
+                        <span className="font-bold text-white block">{primary.name}</span>
                         <span className="text-[11px] text-slate-400 font-mono">
-                          {ath.rut_dni} · {ath.club_name}
+                          {primary.rut_dni} · {primary.club_name}
                         </span>
                       </td>
 
                       <td className="p-3">
-                        <span className="font-bold text-blue-300">{ath.category_name}</span>
+                        <div className="flex flex-col gap-1">
+                          {regEvaluations.map(({ reg }) => (
+                            <span key={reg.registration_id} className="font-bold text-blue-300 leading-5">
+                              {reg.category_name}
+                            </span>
+                          ))}
+                        </div>
                       </td>
 
                       <td className="p-3 font-mono text-slate-400">
-                        {parsedLimit
-                          ? parsedLimit.isPlus
-                            ? `≥ ${parsedLimit.limit} kg`
-                            : `≤ ${parsedLimit.limit} kg`
-                          : 'Abierto'}
+                        <div className="flex flex-col gap-1">
+                          {regEvaluations.map(({ reg, parsedLimit }) => (
+                            <span key={reg.registration_id} className="leading-5">
+                              {parsedLimit
+                                ? parsedLimit.isPlus
+                                  ? `≥ ${parsedLimit.limit} kg`
+                                  : `≤ ${parsedLimit.limit} kg`
+                                : 'Abierto'}
+                            </span>
+                          ))}
+                        </div>
                       </td>
 
                       <td className="p-3 text-center">
@@ -164,11 +246,9 @@ export function TournamentWeighInTab({
                             step="0.1"
                             placeholder="00.0"
                             value={inputVal}
-                            onChange={(e) =>
-                              onWeightInputChange(ath.registration_id, e.target.value)
-                            }
+                            onChange={(e) => onWeightInputChange(athleteKey, e.target.value)}
                             className={`w-20 px-2.5 py-1 text-center font-mono font-bold rounded-lg border text-xs ${
-                              isOverweight
+                              anyOverweight
                                 ? 'bg-red-950/80 border-red-500 text-red-300'
                                 : 'bg-slate-950 border-slate-700 text-white'
                             }`}
@@ -178,41 +258,73 @@ export function TournamentWeighInTab({
                       </td>
 
                       <td className="p-3 text-center">
-                        {ath.weigh_in_status === 'PASSED' ? (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
-                            APROBADO
-                          </span>
-                        ) : ath.weigh_in_status === 'DSQ' ? (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-red-950 text-red-400 border border-red-800">
-                            EXCEDIDO
-                          </span>
-                        ) : (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-950 text-amber-400 border border-amber-800">
-                            PENDIENTE
-                          </span>
-                        )}
+                        <div className="flex flex-col items-center gap-1">
+                          {regEvaluations.map(({ reg, isOverweight }) => {
+                            const effectiveStatus = hasWeight
+                              ? isOverweight
+                                ? 'DSQ'
+                                : reg.weigh_in_status === 'PASSED'
+                                ? 'PASSED'
+                                : reg.weigh_in_status === 'DSQ'
+                                ? 'DSQ'
+                                : 'PENDING'
+                              : reg.weigh_in_status;
+
+                            return effectiveStatus === 'PASSED' ? (
+                              <span
+                                key={reg.registration_id}
+                                className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-950 text-emerald-400 border border-emerald-800"
+                              >
+                                APROBADO
+                              </span>
+                            ) : effectiveStatus === 'DSQ' || isOverweight ? (
+                              <span
+                                key={reg.registration_id}
+                                className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-red-950 text-red-400 border border-red-800"
+                              >
+                                EXCEDIDO
+                              </span>
+                            ) : (
+                              <span
+                                key={reg.registration_id}
+                                className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-950 text-amber-400 border border-amber-800"
+                              >
+                                PENDIENTE
+                              </span>
+                            );
+                          })}
+                        </div>
                       </td>
 
                       <td className="p-3 text-right">
-                        <div className="flex items-center justify-end space-x-2">
-                          {suggestedCat && (
-                            <button
-                              type="button"
-                              onClick={() => onReclassifyAthlete(ath, suggestedCat)}
-                              className="px-2.5 py-1 rounded-lg bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-800 text-[11px] font-bold transition flex items-center space-x-1"
-                              title={`Reclasificar a ${suggestedCat}`}
-                            >
-                              <span>Subir a {suggestedCat.split(' ').pop()}</span>
-                            </button>
-                          )}
+                        <div className="flex items-center justify-end flex-wrap gap-1.5">
+                          {regEvaluations
+                            .filter((ev) => ev.suggestedCat)
+                            .map(({ reg, suggestedCat }) => (
+                              <button
+                                key={reg.registration_id}
+                                type="button"
+                                onClick={() =>
+                                  onReclassifyAthlete(reg, suggestedCat!, hasWeight ? numVal : undefined)
+                                }
+                                className="px-2.5 py-1 rounded-lg bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-800 text-[11px] font-bold transition flex items-center space-x-1"
+                                title={`Reclasificar ${reg.category_name} a ${suggestedCat}`}
+                              >
+                                <span>
+                                  {registrations.length > 1
+                                    ? `Subir (${reg.category_name.split(' ').pop()}) ➔ ${suggestedCat!.split(' ').pop()}`
+                                    : `Subir a ${suggestedCat!.split(' ').pop()}`}
+                                </span>
+                              </button>
+                            ))}
 
                           <button
                             type="button"
-                            onClick={() => onRecordWeight(ath)}
-                            disabled={savingWeightId === ath.registration_id}
-                            className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black transition"
+                            onClick={() => onRecordWeight(primary, hasWeight ? numVal : undefined)}
+                            disabled={isSavingThisAthlete}
+                            className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black transition disabled:opacity-50"
                           >
-                            {savingWeightId === ath.registration_id ? '...' : 'Guardar'}
+                            {isSavingThisAthlete ? '...' : 'Guardar'}
                           </button>
                         </div>
                       </td>

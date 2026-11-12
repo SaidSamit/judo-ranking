@@ -19,29 +19,19 @@ import { useRouter } from 'next/navigation';
 import {
   Trophy,
   Plus,
-  Users,
   Calendar,
   MapPin,
-  Monitor,
   CheckCircle2,
   AlertCircle,
-  Play,
-  Scale,
-  KeyRound,
-  Sparkles,
   RefreshCw,
-  Layers,
   ArrowRight,
-  ShieldCheck,
 } from 'lucide-react';
 import {
   getTournamentsAction,
   createTournamentAction,
-  injectAthletesToTournamentAction,
   setActiveTournamentAction,
   TournamentItem,
 } from '@/app/actions/tournaments';
-import { BASE_ATHLETES_ROSTER } from '@/lib/data/roster-data';
 
 export default function TournamentsPage() {
   const router = useRouter();
@@ -49,8 +39,6 @@ export default function TournamentsPage() {
   const [activeTournamentId, setActiveTournamentId] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [isInjectModalOpen, setIsInjectModalOpen] = useState(false);
-  const [targetTournament, setTargetTournament] = useState<TournamentItem | null>(null);
 
   // Estados del formulario de creación
   const [formName, setFormName] = useState('');
@@ -58,7 +46,6 @@ export default function TournamentsPage() {
   const [formStartDate, setFormStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [formEndDate, setFormEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [formTatamiCount, setFormTatamiCount] = useState(3);
-  const [formInjectAthletes, setFormInjectAthletes] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(
@@ -98,7 +85,6 @@ export default function TournamentsPage() {
         start_date: formStartDate,
         end_date: formEndDate,
         tatami_count: Number(formTatamiCount),
-        injectExistingAthletes: formInjectAthletes,
       });
 
       if (res.success && res.tournament) {
@@ -121,41 +107,6 @@ export default function TournamentsPage() {
       setFeedback({ type: 'error', text: err.message || 'Error inesperado.' });
     } finally {
       setIsSubmitting(false);
-    }
-  };
-
-  // Manejador: Inyectar deportistas a un campeonato existente
-  const handleInjectAthletes = async () => {
-    if (!targetTournament) return;
-
-    setIsSubmitting(true);
-    try {
-      const res = await injectAthletesToTournamentAction(targetTournament.id);
-      if (res.success) {
-        setTournaments((prev) =>
-          prev.map((t) =>
-            t.id === targetTournament.id
-              ? {
-                  ...t,
-                  athlete_count: (t.athlete_count || 0) + res.count,
-                  categories_count: Math.max(t.categories_count || 1, 4),
-                }
-              : t
-          )
-        );
-        setIsInjectModalOpen(false);
-        setFeedback({
-          type: 'success',
-          text: `¡Se inyectaron ${res.count} deportistas a ${targetTournament.name}! Listos para pesaje y llaves.`,
-        });
-      } else {
-        setFeedback({ type: 'error', text: res.message || 'Error inyectando deportistas.' });
-      }
-    } catch (err: any) {
-      setFeedback({ type: 'error', text: err.message || 'Error inesperado al inyectar.' });
-    } finally {
-      setIsSubmitting(false);
-      setTargetTournament(null);
     }
   };
 
@@ -190,8 +141,8 @@ export default function TournamentsPage() {
             </h1>
           </div>
           <p className="text-slate-400 text-sm max-w-3xl">
-            Crea nuevos campeonatos, asigna la cantidad de tatamis y administra la inyección de
-            los deportistas ingresados a sus respectivas divisiones y categorías oficiales.
+            Crea nuevos campeonatos, asigna la cantidad de tatamis y administra la nómina, pesaje y
+            llaves oficiales de cada torneo.
           </p>
         </div>
 
@@ -255,7 +206,7 @@ export default function TournamentsPage() {
 
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
           <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider block">
-            Deportistas Inyectados
+            Deportistas Inscritos
           </span>
           <span className="text-2xl font-black text-emerald-400 mt-1 block">
             {activeTour?.athlete_count || 0}
@@ -290,6 +241,15 @@ export default function TournamentsPage() {
           </button>
         </div>
 
+        {!loading && tournaments.length === 0 ? (
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-12 text-center space-y-3">
+            <Trophy className="w-10 h-10 text-slate-600 mx-auto" />
+            <p className="text-sm font-bold text-white">No hay campeonatos registrados todavía.</p>
+            <p className="text-xs text-slate-400">
+              Crea un nuevo campeonato para configurar tatamis, generar credenciales e inscribir judokas.
+            </p>
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {tournaments.map((tour) => (
             <div
@@ -364,6 +324,7 @@ export default function TournamentsPage() {
             </div>
           ))}
         </div>
+        )}
       </section>
 
       {/* ========================================================================= */}
@@ -457,23 +418,6 @@ export default function TournamentsPage() {
                 </div>
               </div>
 
-              {/* Inyección de atletas checkbox */}
-              <div className="p-3.5 bg-emerald-950/40 border border-emerald-800/80 rounded-2xl flex items-start space-x-3">
-                <input
-                  type="checkbox"
-                  id="injectAthletesCheck"
-                  checked={formInjectAthletes}
-                  onChange={(e) => setFormInjectAthletes(e.target.checked)}
-                  className="mt-1 w-4 h-4 rounded text-emerald-500 focus:ring-emerald-400 bg-slate-950 border-slate-700 cursor-pointer"
-                />
-                <label htmlFor="injectAthletesCheck" className="text-xs text-slate-300 cursor-pointer">
-                  <strong className="text-emerald-300 block">
-                    Inyectar automáticamente deportistas ingresados ({BASE_ATHLETES_ROSTER.length} atletas)
-                  </strong>
-                  Asocia de inmediato la nómina de atletas ingresados al campeonato, creando sus divisiones oficiales para pesaje y llaves.
-                </label>
-              </div>
-
               <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
                 <button
                   type="button"
@@ -506,81 +450,6 @@ export default function TournamentsPage() {
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* MODAL: INYECCIÓN MANUAL DE DEPORTISTAS                                   */}
-      {/* ========================================================================= */}
-      {isInjectModalOpen && targetTournament && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl relative">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center space-x-2">
-                <Sparkles className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-lg font-black text-white">Inyectar Deportistas</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsInjectModalOpen(false)}
-                className="text-slate-400 hover:text-white text-sm"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs text-slate-300">
-              <p>
-                Estás a punto de inyectar la nómina de atletas registrados en el campeonato:
-              </p>
-              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl font-mono text-[11px] text-amber-300">
-                {targetTournament.name}
-              </div>
-
-              <div className="space-y-1.5 pt-2">
-                <span className="font-bold text-slate-400 block">Deportistas a Inyectar:</span>
-                <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
-                  {BASE_ATHLETES_ROSTER.map((ath, idx) => (
-                    <div
-                      key={idx}
-                      className="flex justify-between items-center py-1 border-b border-slate-800 text-[11px]"
-                    >
-                      <span className="font-bold text-white">{ath.name}</span>
-                      <span className="text-slate-400">{ath.category}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => setIsInjectModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition"
-              >
-                Cancelar
-              </button>
-
-              <button
-                type="button"
-                onClick={handleInjectAthletes}
-                disabled={isSubmitting}
-                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-wider transition shadow-lg flex items-center space-x-1.5"
-              >
-                {isSubmitting ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Inyectando...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    <span>Confirmar Inyección</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

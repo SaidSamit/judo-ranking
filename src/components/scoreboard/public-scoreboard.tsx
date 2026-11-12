@@ -17,15 +17,18 @@
 import React, { useState, useEffect } from 'react';
 import { useRealtimeBroadcast } from '@/hooks/use-realtime-broadcast';
 import { BroadcastMatchPayload } from '@/types/events';
+import { Zap } from 'lucide-react';
 
 interface PublicScoreboardProps {
   initialPayload: BroadcastMatchPayload;
   channelName: string;
+  isDemoMode?: boolean;
 }
 
-export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboardProps) {
+export function PublicScoreboard({ initialPayload, channelName, isDemoMode = false }: PublicScoreboardProps) {
   const [matchData, setMatchData] = useState<BroadcastMatchPayload>(initialPayload);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const isDemo = isDemoMode || matchData.tatami_number === 0 || matchData.match_id === 'demo-match';
 
   // 1. Suscripción en MODO RECEPTOR al canal de Broadcast de Supabase
   const { connectionStatus, isSubscribed } = useRealtimeBroadcast({
@@ -76,17 +79,20 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
       <header className="flex items-center justify-between px-8 py-3 bg-slate-900 border-b-2 border-slate-800">
         <div className="flex items-center space-x-6">
           <span className="text-3xl font-black tracking-widest text-amber-400">
-            TATAMI {matchData.tatami_number}
+            {isDemo ? 'TATAMI DEMO' : `TATAMI ${matchData.tatami_number}`}
           </span>
           <span className="text-xl font-bold px-4 py-1 rounded-full bg-slate-800 text-slate-200 border border-slate-700">
-            {matchData.category_name} • Combate #{matchData.match_number}
+            {isDemo
+              ? 'Mesa de Demostración • Modo Práctica'
+              : `${matchData.category_name} • Combate #${matchData.match_number}`}
           </span>
         </div>
 
         <div className="flex items-center space-x-4">
           {matchData.is_golden_score && (
-            <span className="text-lg font-black px-4 py-1 rounded-md bg-amber-500 text-slate-950 animate-pulse tracking-wider">
-              GOLDEN SCORE
+            <span className="inline-flex items-center space-x-1.5 text-lg font-black px-4 py-1 rounded-lg bg-amber-500 text-slate-950 animate-pulse tracking-widest shadow-lg shadow-amber-500/40 border-2 border-amber-300">
+              <Zap className="w-5 h-5 fill-slate-950" />
+              <span>GOLDEN SCORE</span>
             </span>
           )}
 
@@ -113,6 +119,19 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
           </button>
         </div>
       </header>
+
+      {/* ==================================================================== */}
+      {/* CINTA DE ALERTA GLOBAL: MODO GOLDEN SCORE (ALTA VISIBILIDAD EN TV) */}
+      {/* ==================================================================== */}
+      {matchData.is_golden_score && (
+        <div className="w-full bg-gradient-to-r from-amber-600 via-amber-400 to-amber-600 text-slate-950 py-1.5 px-6 flex items-center justify-center space-x-4 border-b-2 border-amber-200 shadow-lg flex-shrink-0">
+          <Zap className="w-5 h-5 fill-slate-950 animate-bounce" />
+          <span className="text-base sm:text-lg lg:text-xl font-black uppercase tracking-[0.25em]">
+            GOLDEN SCORE
+          </span>
+          <Zap className="w-5 h-5 fill-slate-950 animate-bounce" />
+        </div>
+      )}
 
       {/* ==================================================================== */}
       {/* CUERPO PRINCIPAL DEL MARCADOR: BLANCO vs RELOJ vs AZUL */}
@@ -185,18 +204,31 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
         {/* ================================================================== */}
         {/* CENTRO: CRONÓMETRO PRINCIPAL Y MEDIDOR DE OSAEKOMI */}
         {/* ================================================================== */}
-        <section className="col-span-2 bg-slate-950 p-4 flex flex-col justify-between items-center border-r-4 border-slate-950">
+        <section
+          className={`col-span-2 p-4 flex flex-col justify-between items-center transition-colors ${
+            matchData.is_golden_score
+              ? 'bg-gradient-to-b from-amber-950/90 via-slate-950 to-amber-950/80 border-x-4 border-amber-500 shadow-[inset_0_0_50px_rgba(245,158,11,0.25)]'
+              : 'bg-slate-950 border-r-4 border-slate-950'
+          }`}
+        >
           {/* Cronómetro Principal */}
           <div className="w-full text-center space-y-2 pt-4">
-            <span className="text-sm uppercase font-mono tracking-widest text-slate-400 font-bold">
-              {matchData.is_golden_score ? 'GOLDEN SCORE' : 'TIEMPO'}
-            </span>
+            {matchData.is_golden_score ? (
+              <div className="inline-flex items-center space-x-1.5 px-4 py-1 rounded-full bg-amber-500 text-slate-950 text-sm lg:text-base font-black uppercase tracking-widest shadow-lg shadow-amber-500/40 border border-amber-300">
+                <Zap className="w-4 h-4 fill-slate-950" />
+                <span>GOLDEN SCORE</span>
+              </div>
+            ) : (
+              <span className="text-sm uppercase font-mono tracking-widest text-slate-400 font-bold">
+                TIEMPO
+              </span>
+            )}
             <div
               className={`text-7xl lg:text-8xl font-black font-mono tracking-tighter ${
                 matchData.is_golden_score
                   ? matchData.is_clock_running
-                    ? 'text-amber-300'
-                    : 'text-amber-500'
+                    ? 'text-amber-300 drop-shadow-[0_0_24px_rgba(245,158,11,0.75)]'
+                    : 'text-amber-400 drop-shadow-[0_0_20px_rgba(245,158,11,0.55)]'
                   : matchData.match_time_remaining === 0
                   ? 'text-red-500 animate-pulse'
                   : matchData.is_clock_running
@@ -326,10 +358,12 @@ export function PublicScoreboard({ initialPayload, channelName }: PublicScoreboa
           <div className="w-full flex items-center justify-between border-b-2 border-slate-800 pb-5 max-w-6xl">
             <div className="flex items-center space-x-4">
               <span className="text-4xl sm:text-5xl font-black text-amber-400 tracking-wider">
-                TATAMI {matchData.tatami_number}
+                {isDemo ? 'TATAMI DEMO' : `TATAMI ${matchData.tatami_number}`}
               </span>
               <span className="text-lg sm:text-xl font-bold px-4 py-1.5 rounded-full bg-slate-900 text-slate-300 border border-slate-700">
-                {matchData.category_name} • Combate #{matchData.match_number}
+                {isDemo
+                  ? 'Mesa de Demostración • Modo Práctica'
+                  : `${matchData.category_name} • Combate #${matchData.match_number}`}
               </span>
             </div>
             <div className="flex items-center space-x-3 text-amber-400 text-lg font-bold font-mono">

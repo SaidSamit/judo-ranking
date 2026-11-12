@@ -25,8 +25,6 @@ import {
   ArrowRight,
   AlertCircle,
   Play,
-  Sparkles,
-  Lock,
 } from 'lucide-react';
 import { loginAdminAction, loginTatamiAction } from '@/app/actions/auth';
 import { getActiveTournamentSummaryAction } from '@/app/actions/tournaments';
@@ -99,21 +97,6 @@ export default function LoginPage() {
       setErrorMessage(err.message || 'Error al conectar con la estación de arbitraje.');
       setLoading(false);
     }
-  };
-
-  // Acceso Rápido Demo 1-Click
-  const handleQuickAdmin = () => {
-    setAuthMode('ADMIN');
-    setAdminUsername('admin');
-    setAdminPassword('admin2026');
-    router.push('/admin/tournaments');
-  };
-
-  const handleQuickDemoTatami = () => {
-    setAuthMode('TATAMI');
-    setStationIdentifier('demo');
-    setTatamiPin('1234');
-    router.push('/tatami/demo');
   };
 
   return (
@@ -194,8 +177,8 @@ export default function LoginPage() {
                 Sesión de Administración
               </span>
               <p className="text-xs text-slate-400">
-                Accede al <strong>Menú de Campeonatos</strong> para configurar torneos, tatamis e
-                inyectar deportistas.
+                Accede al <strong>Menú de Campeonatos</strong> para gestionar torneos, pesaje,
+                llaves y tatamis.
               </p>
             </div>
 
@@ -206,7 +189,7 @@ export default function LoginPage() {
                 required
                 value={adminUsername}
                 onChange={(e) => setAdminUsername(e.target.value)}
-                placeholder="admin"
+                placeholder="Ingresa tu usuario"
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 placeholder-slate-500 font-medium"
               />
             </div>
@@ -214,7 +197,6 @@ export default function LoginPage() {
             <div className="space-y-1.5">
               <div className="flex justify-between items-center">
                 <label className="text-xs font-bold text-slate-300">Clave Maestra</label>
-                <span className="text-[10px] text-slate-500 font-mono">Demo: admin2026</span>
               </div>
               <input
                 type="password"
@@ -269,7 +251,6 @@ export default function LoginPage() {
                 <label className="text-xs font-bold text-slate-300">
                   Identificador de Estación / Usuario
                 </label>
-                <span className="text-[10px] text-slate-500 font-mono">Demo: demo</span>
               </div>
               <div className="relative">
                 <Monitor className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -278,7 +259,7 @@ export default function LoginPage() {
                   required
                   value={stationIdentifier}
                   onChange={(e) => setStationIdentifier(e.target.value)}
-                  placeholder="demo"
+                  placeholder="Ej: tatami-1"
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-blue-500 placeholder-slate-600 font-medium"
                 />
               </div>
@@ -288,7 +269,6 @@ export default function LoginPage() {
             <div className="space-y-1.5">
               <div className="flex justify-between items-center">
                 <label className="text-xs font-bold text-slate-300">Contraseña / PIN</label>
-                <span className="text-[10px] text-slate-500 font-mono">Demo: 1234</span>
               </div>
               <div className="relative">
                 <KeyRound className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -313,35 +293,6 @@ export default function LoginPage() {
             </button>
           </form>
         )}
-
-        {/* ACCESO RÁPIDO DEMOSTRACIÓN (1 CLIC) */}
-        <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 space-y-2.5 text-xs text-center">
-          <div className="space-y-0.5">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-              Acceso Rápido para Pruebas (1 Clic)
-            </span>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={handleQuickAdmin}
-              className="px-3.5 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
-            >
-              <Trophy className="w-3.5 h-3.5" />
-              <span>Entrar como Director</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleQuickDemoTatami}
-              className="px-3.5 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
-            >
-              <Monitor className="w-3.5 h-3.5" />
-              <span>Mesa de Control (Demo)</span>
-            </button>
-          </div>
-        </div>
 
         {/* PIE DE PÁGINA */}
         <div className="text-center text-xs text-slate-500">

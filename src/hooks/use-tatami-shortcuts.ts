@@ -60,6 +60,7 @@ export interface UseTatamiShortcutsOptions {
   onSwapOsaekomi: () => void;
   onDeclareFinish: () => void;
   onAdjustTime?: (deltaSeconds: number) => void;
+  onStartGoldenScore?: () => void;
   isEnabled?: boolean;
 }
 
@@ -71,6 +72,7 @@ export function useTatamiShortcuts({
   onSwapOsaekomi,
   onDeclareFinish,
   onAdjustTime,
+  onStartGoldenScore,
   isEnabled = true,
 }: UseTatamiShortcutsOptions) {
   const handleKeyDown = useCallback(
@@ -111,6 +113,13 @@ export function useTatamiShortcuts({
       if (e.key === 'Enter') {
         e.preventDefault();
         onDeclareFinish();
+        return;
+      }
+
+      // 5.5. Iniciar Golden Score (Tecla G) - irreversible una vez activado
+      if (key === 'g' && !isShift && onStartGoldenScore) {
+        e.preventDefault();
+        onStartGoldenScore();
         return;
       }
 
@@ -177,6 +186,7 @@ export function useTatamiShortcuts({
       onSwapOsaekomi,
       onDeclareFinish,
       onAdjustTime,
+      onStartGoldenScore,
     ]
   );
 

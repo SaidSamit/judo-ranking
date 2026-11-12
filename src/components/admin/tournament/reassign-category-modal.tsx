@@ -114,10 +114,9 @@ export function ReassignCategoryModal({
 interface AdditionalCategoryModalProps {
   athlete: RegisteredAthleteSummary | null;
   categories: Array<{ id: string; name: string; assigned_tatami_number?: number }>;
+  alreadyRegisteredCategoryIds?: string[];
   targetCatId: string;
   onTargetCatIdChange: (id: string) => void;
-  customCatName: string;
-  onCustomCatNameChange: (val: string) => void;
   isSubmitting: boolean;
   onConfirm: () => void;
   onClose: () => void;
@@ -126,15 +125,22 @@ interface AdditionalCategoryModalProps {
 export function AdditionalCategoryModal({
   athlete,
   categories,
+  alreadyRegisteredCategoryIds,
   targetCatId,
   onTargetCatIdChange,
-  customCatName,
-  onCustomCatNameChange,
   isSubmitting,
   onConfirm,
   onClose,
 }: AdditionalCategoryModalProps) {
   if (!athlete) return null;
+
+  const excludedIds = new Set(
+    alreadyRegisteredCategoryIds && alreadyRegisteredCategoryIds.length > 0
+      ? alreadyRegisteredCategoryIds
+      : [athlete.category_id]
+  );
+
+  const availableCategories = categories.filter((c) => !excludedIds.has(c.id));
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -172,39 +178,27 @@ export function AdditionalCategoryModal({
 
           <div>
             <label className="text-xs font-bold text-slate-300 block mb-1">
-              Seleccionar Categoría Adicional
+              Seleccionar Categoría Adicional Existente
             </label>
-            <select
-              value={targetCatId}
-              onChange={(e) => onTargetCatIdChange(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-400"
-            >
-              <option value="">-- Elige una categoría --</option>
-              {categories
-                .filter((c) => c.id !== athlete.category_id)
-                .map((c) => (
+            {availableCategories.length > 0 ? (
+              <select
+                value={targetCatId}
+                onChange={(e) => onTargetCatIdChange(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-400"
+              >
+                <option value="">-- Elige una categoría del torneo --</option>
+                {availableCategories.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} (Tatami #{c.assigned_tatami_number || 1})
                   </option>
                 ))}
-              <option value="__custom__">+ Crear y asignar categoría personalizada</option>
-            </select>
+              </select>
+            ) : (
+              <p className="text-amber-400 text-xs py-2 bg-slate-950/60 px-3 rounded-xl border border-slate-800">
+                No hay otras categorías creadas disponibles en este campeonato.
+              </p>
+            )}
           </div>
-
-          {targetCatId === '__custom__' && (
-            <div>
-              <label className="text-xs font-bold text-slate-300 block mb-1">
-                Nombre de la Nueva Categoría
-              </label>
-              <input
-                type="text"
-                placeholder="ej: Sub-18 Masculino -81kg"
-                value={customCatName}
-                onChange={(e) => onCustomCatNameChange(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-400"
-              />
-            </div>
-          )}
         </div>
 
         <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
@@ -220,8 +214,7 @@ export function AdditionalCategoryModal({
             disabled={
               isSubmitting ||
               !targetCatId ||
-              (targetCatId === '__custom__' && !customCatName.trim()) ||
-              targetCatId === athlete.category_id
+              excludedIds.has(targetCatId)
             }
             onClick={onConfirm}
             className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-black uppercase tracking-wider transition shadow flex items-center space-x-1.5 disabled:opacity-50 disabled:cursor-not-allowed"

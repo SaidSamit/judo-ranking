@@ -1,13 +1,11 @@
 // ==============================================================================
-// SERVER ACTIONS: GESTIÓN DE CAMPEONATOS E INYECCIÓN DE DEPORTISTAS
+// SERVER ACTIONS: GESTIÓN DE CAMPEONATOS OFICIALES
 // ==============================================================================
 //
 // REGLAS Y OBJETIVOS:
 // 1. Permite crear campeonatos con configuración de tatamis y fechas oficiales.
-// 2. Inyección de Atletas: Permite asociar masivamente los deportistas ingresados
-//    en el sistema al campeonato creado, creando las categorías necesarias en la DB.
-// 3. Aprovisionamiento automático de estaciones y PINs para cada tatami.
-// 4. Conmutación reactiva de torneo activo.
+// 2. Aprovisionamiento automático de estaciones y PINs para cada tatami.
+// 3. Conmutación reactiva de torneo activo.
 //
 // ==============================================================================
 
@@ -16,9 +14,6 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { confirmRegistrationsAction, DraftAthletePayload } from '@/app/actions/registrations';
-import { BASE_ATHLETES_ROSTER } from '@/lib/data/roster-data';
-import { getAvailableCategoriesForAthlete } from '@/lib/rules/judo-categories';
 
 export interface TournamentItem {
   id: string;
@@ -40,25 +35,10 @@ export interface CreateTournamentInput {
   start_date?: string;
   end_date?: string;
   tatami_count: number;
-  injectExistingAthletes?: boolean;
 }
 
-// Almacén en memoria de respaldo para torneos
-let inMemoryTournaments: TournamentItem[] = [
-  {
-    id: 'e0000000-0000-0000-0000-000000000001',
-    name: 'Torneo Regional Iquique Open 2026',
-    status: 'ACTIVE',
-    location: 'Polideportivo Central Iquique',
-    start_date: new Date().toISOString().split('T')[0],
-    end_date: new Date().toISOString().split('T')[0],
-    tatami_count: 3,
-    athlete_count: 8,
-    categories_count: 4,
-    is_active: true,
-    created_at: new Date().toISOString(),
-  },
-];
+// Almacén en memoria de respaldo para torneos de la sesión actual
+let inMemoryTournaments: TournamentItem[] = [];
 
 /**
  * Obtiene la lista completa de campeonatos registrados.
@@ -100,8 +80,8 @@ export async function getTournamentsAction(): Promise<{
           start_date: t.start_date,
           end_date: t.end_date,
           tatami_count: config.tatami_count || 3,
-          athlete_count: athleteCount > 0 ? athleteCount : (config.injected_athletes_count || 0),
-          categories_count: categoriesCount > 0 ? categoriesCount : (config.categories_count || 1),
+          athlete_count: athleteCount,
+          categories_count: categoriesCount,
           is_active: t.status === 'ACTIVE',
           created_at: t.created_at,
         };
@@ -117,34 +97,18 @@ export async function getTournamentsAction(): Promise<{
         activeTournamentId: active,
       };
     } else if (!tourError && (!tournamentsData || tournamentsData.length === 0)) {
-      // Si la base de datos no tiene torneos, persistimos el torneo inicial en Supabase
-      const defaultTour = inMemoryTournaments[0];
-      const nowIso = new Date().toISOString();
-      await supabase.from('tournaments').upsert(
-        {
-          id: defaultTour.id,
-          organization_id: 'a0000000-0000-0000-0000-000000000001',
-          name: defaultTour.name,
-          status: 'ACTIVE',
-          location: defaultTour.location,
-          start_date: defaultTour.start_date,
-          end_date: defaultTour.end_date,
-          config: {
-            tatami_count: defaultTour.tatami_count,
-            score_types: ['IPPON', 'WAZA_ARI', 'YUKO'],
-            best_of_limit: 6,
-          },
-          created_at: nowIso,
-          updated_at: nowIso,
-        },
-        { onConflict: 'id' }
-      );
+      inMemoryTournaments = [];
+      return {
+        success: true,
+        tournaments: [],
+        activeTournamentId: '',
+      };
     }
   } catch (err) {
     console.warn('Operando con respaldo en memoria de torneos:', err);
   }
 
-  const activeId = inMemoryTournaments.find((t) => t.is_active)?.id || inMemoryTournaments[0].id;
+  const activeId = inMemoryTournaments.find((t) => t.is_active)?.id || inMemoryTournaments[0]?.id || '';
   return {
     success: true,
     tournaments: inMemoryTournaments,
@@ -213,13 +177,6 @@ export async function createTournamentAction(
     });
   }
 
-  // Inyección de deportistas seleccionada desde la base de datos
-  let athletesToInject: DraftAthletePayload[] = [];
-  if (input.injectExistingAthletes) {
-    athletesToInject = await resolveExistingAthletesForTournament(organizationId);
-  }
-  const injectedCount = athletesToInject.length;
-
   const newTournament: TournamentItem = {
     id: newId,
     name: input.name.trim(),
@@ -228,8 +185,8 @@ export async function createTournamentAction(
     start_date: startDate,
     end_date: endDate,
     tatami_count: tatamiCount,
-    athlete_count: injectedCount,
-    categories_count: injectedCount > 0 ? 4 : 0,
+    athlete_count: 0,
+    categories_count: 0,
     is_active: true,
     created_at: nowIso,
   };
@@ -258,7 +215,6 @@ export async function createTournamentAction(
         tatami_count: tatamiCount,
         credentials_generated_at: nowIso,
         tatami_credentials: credentialsList,
-        injected_athletes_count: injectedCount,
         score_types: ['IPPON', 'WAZA_ARI', 'YUKO'],
         best_of_limit: 6,
       },
@@ -277,175 +233,16 @@ export async function createTournamentAction(
         onConflict: 'organization_id,slug',
       });
     }
-
-    // 4. Si se solicitó inyección de atletas, ejecutamos la confirmación relacional de los atletas reales
-    if (input.injectExistingAthletes && athletesToInject.length > 0) {
-      await confirmRegistrationsAction(athletesToInject, organizationId, newId);
-    }
   } catch (dbErr) {
     console.warn('Operando con respaldo seguro de memoria:', dbErr);
   }
 
   return {
     success: true,
-    message: `Campeonato "${input.name.trim()}" creado exitosamente.${
-      injectedCount > 0
-        ? ` Se inyectaron ${injectedCount} deportistas de la organización a sus categorías.`
-        : ''
-    }`,
+    message: `Campeonato "${input.name.trim()}" creado exitosamente.`,
     tournament: newTournament,
-    injectedAthletesCount: injectedCount,
+    injectedAthletesCount: 0,
   };
-}
-
-/**
- * Consulta los atletas existentes de la organización en la base de datos
- * y los mapea con sus categorías sugeridas según su edad y género.
- */
-async function resolveExistingAthletesForTournament(
-  organizationId: string
-): Promise<DraftAthletePayload[]> {
-  try {
-    const supabase = createAdminClient();
-
-    // 1. Consultar todos los atletas registrados en la organización
-    const { data: dbAthletes, error } = await supabase
-      .from('athletes')
-      .select(`
-        id,
-        rut_dni,
-        first_name,
-        last_name,
-        gender,
-        birth_date,
-        club:clubs (
-          name
-        )
-      `)
-      .or(`created_by_org_id.eq.${organizationId},created_by_org_id.is.null`);
-
-    if (error || !dbAthletes || dbAthletes.length === 0) {
-      return BASE_ATHLETES_ROSTER;
-    }
-
-    // 2. Consultar inscripciones previas para reutilizar categorías habituales
-    const { data: recentRegs } = await supabase
-      .from('tournament_registrations')
-      .select(`
-        athlete_id,
-        category:categories (
-          name
-        )
-      `)
-      .order('created_at', { ascending: false });
-
-    const athleteCategoryMap = new Map<string, string>();
-    (recentRegs || []).forEach((reg: any) => {
-      if (reg.athlete_id && reg.category?.name && !athleteCategoryMap.has(reg.athlete_id)) {
-        athleteCategoryMap.set(reg.athlete_id, reg.category.name);
-      }
-    });
-
-    const currentYear = new Date().getFullYear();
-
-    const mappedDbAthletes: DraftAthletePayload[] = dbAthletes.map((ath: any) => {
-      const birthYear = ath.birth_date ? new Date(ath.birth_date).getFullYear() : 2008;
-      const gender = (ath.gender as 'M' | 'F') || 'M';
-      const clubName =
-        ath.club?.name || (Array.isArray(ath.club) ? ath.club[0]?.name : 'Independiente');
-
-      let categoryName = athleteCategoryMap.get(ath.id);
-      if (!categoryName) {
-        const catInfo = getAvailableCategoriesForAthlete(birthYear, gender, currentYear);
-        categoryName =
-          catInfo.categories[0] ||
-          (gender === 'F' ? 'Senior Femenino -52kg' : 'Senior Masculino -66kg');
-      }
-
-      return {
-        id: ath.id,
-        name: `${ath.first_name} ${ath.last_name}`.trim(),
-        club_name: clubName,
-        category: categoryName,
-        rut_dni: ath.rut_dni,
-        gender: gender,
-        birth_year: birthYear,
-        birth_date: ath.birth_date,
-      };
-    });
-
-    // Fusionar con la nómina base de prueba para garantizar siempre los 8 atletas y 4 categorías en pruebas
-    const existingRuts = new Set(
-      mappedDbAthletes.map((a) => a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase())
-    );
-    const mergedAthletes = [...mappedDbAthletes];
-    BASE_ATHLETES_ROSTER.forEach((baseAth) => {
-      const cleanRut = baseAth.rut_dni.replace(/[.\-\s]/g, '').toUpperCase();
-      if (!existingRuts.has(cleanRut)) {
-        mergedAthletes.push(baseAth);
-        existingRuts.add(cleanRut);
-      }
-    });
-
-    return mergedAthletes;
-  } catch (err) {
-    console.warn('[resolveExistingAthletesForTournament] Error, usando respaldo:', err);
-    return BASE_ATHLETES_ROSTER;
-  }
-}
-
-/**
- * Inyecta una nómina de deportistas a un campeonato específico.
- */
-export async function injectAthletesToTournamentAction(
-  tournamentId: string,
-  athletesToInject?: DraftAthletePayload[],
-  organizationId: string = 'a0000000-0000-0000-0000-000000000001'
-): Promise<{ success: boolean; count: number; message: string }> {
-  if (!tournamentId) {
-    return { success: false, count: 0, message: 'ID de campeonato inválido.' };
-  }
-
-  try {
-    const list =
-      athletesToInject && athletesToInject.length > 0
-        ? athletesToInject
-        : await resolveExistingAthletesForTournament(organizationId);
-
-    const res = await confirmRegistrationsAction(list, organizationId, tournamentId);
-
-    if (!res.success) {
-      return {
-        success: false,
-        count: 0,
-        message: res.message || 'Error al inscribir deportistas en la base de datos.',
-      };
-    }
-
-    // Actualizar memoria
-    inMemoryTournaments = inMemoryTournaments.map((t) =>
-      t.id === tournamentId
-        ? {
-            ...t,
-            athlete_count: (t.athlete_count || 0) + res.count,
-            categories_count: Math.max(t.categories_count || 1, 4),
-          }
-        : t
-    );
-
-    return {
-      success: true,
-      count: res.count,
-      message: `Se inyectaron ${res.count} deportistas correctamente al campeonato.`,
-    };
-  } catch (err: any) {
-    console.warn('Error inyectando en Supabase, aplicando a memoria:', err);
-    return {
-      success: false,
-      count: 0,
-      message: `Error al inyectar deportistas: ${err.message}`,
-    };
-  }
 }
 
 /**

@@ -141,7 +141,7 @@ export async function getTournamentCategoriesStatusAction(
     const { data: existingMatches, error: matchErr } = await supabase
       .from('matches')
       .select('id, category_id')
-      .eq('tournament_id', tournamentId);
+      .eq('tournament_id', targetTourId);
 
     if (matchErr) throw new Error(matchErr.message);
 
@@ -1343,8 +1343,12 @@ export async function createTournamentCategoryAction(params: {
       assigned_tatami_number,
     } = params;
 
-    if (!tournamentId || !name) {
-      return { success: false, message: 'Nombre y torneo son obligatorios.', error: 'INVALID_PARAMS' };
+    if (!tournamentId || !name || name.trim().length < 2) {
+      return {
+        success: false,
+        message: 'El nombre de la categoría debe tener al menos 2 caracteres.',
+        error: 'INVALID_PARAMS',
+      };
     }
 
     // 1. Obtener organización del torneo
@@ -1804,5 +1808,92 @@ export async function updateCategoryMatchDurationAction(params: {
   } catch (err: any) {
     console.error('[updateCategoryMatchDurationAction] Error:', err);
     return { success: false, error: err.message || 'Error al actualizar duración de la categoría.' };
+  }
+}
+
+/**
+ * Elimina una categoría del torneo junto con sus inscripciones y combates pendientes/no disputados.
+ * Protege categorías que ya tienen combates iniciados o disputados en tatami.
+ */
+export async function deleteTournamentCategoryAction(params: {
+  categoryId: string;
+  tournamentId: string;
+}): Promise<{ success: boolean; message: string; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const { categoryId, tournamentId } = params;
+
+    if (!categoryId || !tournamentId) {
+      return { success: false, message: 'Faltan identificadores para eliminar la categoría.' };
+    }
+
+    // 1. Verificar que no tenga combates en curso o finalizados realmente (excluyendo byes autogenerados sin iniciar)
+    const { data: existingMatches } = await supabase
+      .from('matches')
+      .select('id, status, started_at, ended_at, white_athlete_id, blue_athlete_id')
+      .eq('category_id', categoryId)
+      .eq('tournament_id', tournamentId);
+
+    const hasStartedOrPlayedMatch = (existingMatches || []).some(
+      (m) =>
+        m.status === 'ONGOING' ||
+        m.status === 'PAUSED' ||
+        m.started_at !== null ||
+        (m.status === 'FINISHED' && m.ended_at !== null)
+    );
+
+    if (hasStartedOrPlayedMatch) {
+      return {
+        success: false,
+        message: 'No se puede eliminar la categoría porque ya tiene combates iniciados o disputados.',
+      };
+    }
+
+    // 2. Eliminar combates pendientes de esta categoría (si existieran)
+    if (existingMatches && existingMatches.length > 0) {
+      const { error: matchDelErr } = await supabase
+        .from('matches')
+        .delete()
+        .eq('category_id', categoryId)
+        .eq('tournament_id', tournamentId);
+
+      if (matchDelErr) {
+        return { success: false, message: `Error eliminando combates: ${matchDelErr.message}` };
+      }
+    }
+
+    // 3. Eliminar inscripciones asociadas a esta categoría
+    const { error: regDelErr } = await supabase
+      .from('tournament_registrations')
+      .delete()
+      .eq('category_id', categoryId)
+      .eq('tournament_id', tournamentId);
+
+    if (regDelErr) {
+      return { success: false, message: `Error eliminando inscripciones: ${regDelErr.message}` };
+    }
+
+    // 4. Eliminar la categoría
+    const { error: catDelErr } = await supabase
+      .from('categories')
+      .delete()
+      .eq('id', categoryId)
+      .eq('tournament_id', tournamentId);
+
+    if (catDelErr) {
+      return { success: false, message: `Error eliminando categoría: ${catDelErr.message}` };
+    }
+
+    return {
+      success: true,
+      message: 'Categoría eliminada exitosamente del campeonato.',
+    };
+  } catch (err: any) {
+    console.error('[deleteTournamentCategoryAction] Error:', err);
+    return {
+      success: false,
+      message: err.message || 'Error inesperado eliminando categoría.',
+      error: err.message,
+    };
   }
 }

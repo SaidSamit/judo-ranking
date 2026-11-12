@@ -29,20 +29,19 @@ import {
   CheckCircle2,
   AlertCircle,
   ArrowLeft,
-  Sparkles,
   Calendar,
   Layers,
 } from 'lucide-react';
 import {
   TournamentItem,
   setActiveTournamentAction,
-  injectAthletesToTournamentAction,
 } from '@/app/actions/tournaments';
 import {
   getTournamentRegistrationsAction,
   RegisteredAthleteSummary,
   reassignAthleteCategoryAction,
   addAthleteToAdditionalCategoryAction,
+  removeAthleteFromCategoryAction,
 } from '@/app/actions/registrations';
 import {
   getWeighInAthletesAction,
@@ -57,6 +56,7 @@ import {
   CategoryBracketStatus,
   reassignCategoryTatamiAction,
   createTournamentCategoryAction,
+  deleteTournamentCategoryAction,
   getTournamentPodiumsAction,
   updateCategoryMatchDurationAction,
   CategoryPodiumResult,
@@ -170,8 +170,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
 
   const [additionalCatAthlete, setAdditionalCatAthlete] = useState<RegisteredAthleteSummary | null>(null);
   const [additionalTargetCatId, setAdditionalTargetCatId] = useState<string>('');
-  const [additionalCustomCatName, setAdditionalCustomCatName] = useState<string>('');
   const [isSubmittingAdditional, setIsSubmittingAdditional] = useState(false);
+  const [isMutatingCategoryAthlete, setIsMutatingCategoryAthlete] = useState(false);
 
   // ==========================================================================
   // CARGA DE DATOS ASÍNCRONOS
@@ -255,9 +255,15 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
 
   // Sincronización al montar y al cambiar de pestaña
   useEffect(() => {
-    if (activeTab === 'roster') loadRoster();
+    if (activeTab === 'roster') {
+      loadRoster();
+      loadBrackets();
+    }
     if (activeTab === 'weigh_in') loadWeighIn();
-    if (activeTab === 'brackets') loadBrackets();
+    if (activeTab === 'brackets') {
+      loadBrackets();
+      loadRoster();
+    }
     if (activeTab === 'credentials') loadCredentials();
     if (activeTab === 'results') loadPodiums();
   }, [activeTab, loadRoster, loadWeighIn, loadBrackets, loadCredentials, loadPodiums]);
@@ -269,7 +275,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   }, [selectedCategoryId, activeTab, loadCategoryBracket]);
 
-  // Conteo de inscripciones por judoka (detección de categorías múltiples)
+  // Conteo de inscripciones y competidores únicos
   const athleteRegistrationCounts = useMemo(() => {
     const counts = new Map<string, number>();
     registeredAthletes.forEach((r) => {
@@ -277,6 +283,27 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     });
     return counts;
   }, [registeredAthletes]);
+
+  const uniqueRegisteredAthletesCount = useMemo(() => {
+    return new Set(registeredAthletes.map((r) => r.athlete_id || r.id)).size;
+  }, [registeredAthletes]);
+
+  const uniqueWeighInStats = useMemo(() => {
+    const byAthlete = new Map<string, WeighInAthlete[]>();
+    weighInAthletes.forEach((a) => {
+      const key = a.athlete_id || a.registration_id;
+      const list = byAthlete.get(key) || [];
+      list.push(a);
+      byAthlete.set(key, list);
+    });
+    let passedCount = 0;
+    byAthlete.forEach((regs) => {
+      if (regs.some((r) => r.weigh_in_status === 'PASSED')) {
+        passedCount += 1;
+      }
+    });
+    return { total: byAthlete.size, passed: passedCount };
+  }, [weighInAthletes]);
 
   // Categorías disponibles para filtro en pesaje
   const weighInCategoriesList = useMemo(() => {
@@ -286,19 +313,6 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     });
     return Array.from(set).sort();
   }, [weighInAthletes]);
-
-  // Judokas filtrados en pesaje
-  const filteredWeighInAthletes = useMemo(() => {
-    return weighInAthletes.filter((ath) => {
-      const matchesSearch =
-        ath.name.toLowerCase().includes(weighInSearch.toLowerCase()) ||
-        ath.rut_dni.toLowerCase().includes(weighInSearch.toLowerCase()) ||
-        ath.club_name.toLowerCase().includes(weighInSearch.toLowerCase());
-      const matchesCat =
-        weighInCategoryFilter === 'ALL' || ath.category_name === weighInCategoryFilter;
-      return matchesSearch && matchesCat;
-    });
-  }, [weighInAthletes, weighInSearch, weighInCategoryFilter]);
 
   // Distribución de carga por tatami
   const tatamiDistribution = useMemo(() => {
@@ -355,28 +369,14 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   // MANEJADORES DE ACCIÓN
   // ==========================================================================
 
-  const handleInjectBaseAthletes = async () => {
-    try {
-      const res = await injectAthletesToTournamentAction(tournament.id);
-      if (res.success) {
-        setFeedback({
-          type: 'success',
-          text: `Se inyectaron ${res.count} judokas a este campeonato.`,
-        });
-        loadRoster();
-        loadWeighIn();
-        loadBrackets();
-      } else {
-        setFeedback({ type: 'error', text: res.message || 'Error al inyectar judokas.' });
-      }
-    } catch {
-      setFeedback({ type: 'error', text: 'Error inesperado inyectando judokas.' });
-    }
-  };
-
-  const handleRecordWeight = async (athlete: WeighInAthlete) => {
-    const rawVal = weightInputs[athlete.registration_id];
-    const weightNum = parseFloat(rawVal ?? String(athlete.actual_weight || ''));
+  const handleRecordWeight = async (athlete: WeighInAthlete, explicitWeight?: number) => {
+    const rawVal =
+      weightInputs[athlete.athlete_id] ??
+      weightInputs[athlete.registration_id];
+    const weightNum =
+      explicitWeight !== undefined && !isNaN(explicitWeight) && explicitWeight > 0
+        ? explicitWeight
+        : parseFloat(rawVal ?? String(athlete.actual_weight || ''));
 
     if (isNaN(weightNum) || weightNum <= 0) {
       setFeedback({ type: 'error', text: 'Ingresa un peso numérico válido en kg.' });
@@ -386,7 +386,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     const { valid } = isWeightValidForCategory(weightNum, athlete.category_name);
     const newStatus: WeighInAthlete['weigh_in_status'] = valid ? 'PASSED' : 'DSQ';
 
-    setSavingWeightId(athlete.registration_id);
+    const saveKey = athlete.athlete_id || athlete.registration_id;
+    setSavingWeightId(saveKey);
     try {
       const res = await recordAthleteWeightAction({
         registrationId: athlete.registration_id,
@@ -396,24 +397,45 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       });
 
       if (res.success) {
-        setWeighInAthletes((prev) =>
-          prev.map((a) =>
-            a.registration_id === athlete.registration_id
-              ? {
-                  ...a,
-                  actual_weight: weightNum,
-                  weigh_in_status: newStatus,
-                  weigh_in_at: new Date().toISOString(),
-                }
-              : a
-          )
+        const updatedMap = new Map(
+          (res.updatedRegistrations || []).map((u) => [u.registration_id, u])
         );
+        const nowIso = new Date().toISOString();
+
+        setWeighInAthletes((prev) =>
+          prev.map((a) => {
+            const updated = updatedMap.get(a.registration_id);
+            if (updated) {
+              return {
+                ...a,
+                actual_weight: updated.actual_weight,
+                weigh_in_status: updated.weigh_in_status,
+                weigh_in_at: nowIso,
+              };
+            }
+            if (a.registration_id === athlete.registration_id || (athlete.athlete_id && a.athlete_id === athlete.athlete_id)) {
+              const check = isWeightValidForCategory(weightNum, a.category_name);
+              return {
+                ...a,
+                actual_weight: weightNum,
+                weigh_in_status: check.valid ? 'PASSED' : 'DSQ',
+                weigh_in_at: nowIso,
+              };
+            }
+            return a;
+          })
+        );
+
+        const anyPassed = res.updatedRegistrations
+          ? res.updatedRegistrations.some((u) => u.weigh_in_status === 'PASSED')
+          : valid;
+
         setFeedback({
-          type: valid ? 'success' : 'info',
-          text: `Peso de ${athlete.name} guardado: ${weightNum} kg (${
-            valid ? 'PESO APROBADO' : 'PESO EXCEDIDO / DSQ'
-          }).`,
+          type: anyPassed ? 'success' : 'info',
+          text: res.message,
         });
+        loadBrackets();
+        loadRoster();
       } else {
         setFeedback({ type: 'error', text: res.message || 'Error guardando peso.' });
       }
@@ -424,12 +446,22 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   };
 
-  const handleReclassifyAthlete = async (athlete: WeighInAthlete, targetCategoryName: string) => {
-    setSavingWeightId(athlete.registration_id);
+  const handleReclassifyAthlete = async (
+    athlete: WeighInAthlete,
+    targetCategoryName: string,
+    explicitWeight?: number
+  ) => {
+    const saveKey = athlete.athlete_id || athlete.registration_id;
+    setSavingWeightId(saveKey);
     try {
-      const currentWeight = parseFloat(
-        weightInputs[athlete.registration_id] || String(athlete.actual_weight || 0)
-      );
+      const rawVal =
+        weightInputs[athlete.athlete_id] ??
+        weightInputs[athlete.registration_id];
+      const currentWeight =
+        explicitWeight !== undefined && !isNaN(explicitWeight) && explicitWeight > 0
+          ? explicitWeight
+          : parseFloat(rawVal || String(athlete.actual_weight || 0));
+
       const res = await recordAthleteWeightAction({
         registrationId: athlete.registration_id,
         actualWeight: currentWeight,
@@ -439,22 +471,40 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       });
 
       if (res.success) {
+        const updatedMap = new Map(
+          (res.updatedRegistrations || []).map((u) => [u.registration_id, u])
+        );
+        const nowIso = new Date().toISOString();
+
         setWeighInAthletes((prev) =>
-          prev.map((a) =>
-            a.registration_id === athlete.registration_id
-              ? {
-                  ...a,
-                  category_name: targetCategoryName,
-                  weigh_in_status: 'PASSED',
-                  actual_weight: currentWeight,
-                }
-              : a
-          )
+          prev.map((a) => {
+            if (a.registration_id === athlete.registration_id) {
+              return {
+                ...a,
+                category_name: targetCategoryName,
+                weigh_in_status: 'PASSED',
+                actual_weight: currentWeight,
+                weigh_in_at: nowIso,
+              };
+            }
+            const updated = updatedMap.get(a.registration_id);
+            if (updated) {
+              return {
+                ...a,
+                actual_weight: updated.actual_weight,
+                weigh_in_status: updated.weigh_in_status,
+                weigh_in_at: nowIso,
+              };
+            }
+            return a;
+          })
         );
         setFeedback({
           type: 'success',
           text: `${athlete.name} reclasificado exitosamente a ${targetCategoryName}.`,
         });
+        loadBrackets();
+        loadRoster();
       }
     } catch {
       setFeedback({ type: 'error', text: 'Error reclasificando judoka.' });
@@ -656,10 +706,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       const res = await addAthleteToAdditionalCategoryAction({
         tournamentId: tournament.id,
         athleteId: additionalCatAthlete.athlete_id,
-        targetCategoryId:
-          additionalTargetCatId === '__custom__' ? undefined : additionalTargetCatId,
-        targetCategoryName:
-          additionalTargetCatId === '__custom__' ? additionalCustomCatName.trim() : undefined,
+        targetCategoryId: additionalTargetCatId,
       });
 
       if (res.success) {
@@ -669,7 +716,6 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
         });
         setAdditionalCatAthlete(null);
         setAdditionalTargetCatId('');
-        setAdditionalCustomCatName('');
         await Promise.all([loadRoster(), loadWeighIn(), loadBrackets()]);
       } else {
         setFeedback({
@@ -681,6 +727,88 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       setFeedback({ type: 'error', text: 'Error inesperado al agregar categoría adicional.' });
     } finally {
       setIsSubmittingAdditional(false);
+    }
+  };
+
+  const handleAddAthleteDirectToCategory = async (athleteId: string, categoryId: string) => {
+    setIsMutatingCategoryAthlete(true);
+    try {
+      const res = await addAthleteToAdditionalCategoryAction({
+        tournamentId: tournament.id,
+        athleteId,
+        targetCategoryId: categoryId,
+      });
+
+      if (res.success) {
+        setFeedback({
+          type: 'success',
+          text: res.message || '¡Judoka agregado a la categoría!',
+        });
+        await Promise.all([loadRoster(), loadWeighIn(), loadBrackets()]);
+      } else {
+        setFeedback({
+          type: 'error',
+          text: res.message || 'Error al agregar judoka a la categoría.',
+        });
+      }
+    } catch {
+      setFeedback({ type: 'error', text: 'Error inesperado al agregar judoka a la categoría.' });
+    } finally {
+      setIsMutatingCategoryAthlete(false);
+    }
+  };
+
+  const handleRemoveAthleteRegistration = async (reg: RegisteredAthleteSummary) => {
+    setIsMutatingCategoryAthlete(true);
+    try {
+      const res = await removeAthleteFromCategoryAction({
+        registrationId: reg.id,
+        tournamentId: tournament.id,
+      });
+      if (res.success) {
+        setFeedback({
+          type: 'success',
+          text: `${reg.name} fue quitado de "${reg.category_name}".`,
+        });
+        await Promise.all([loadRoster(), loadWeighIn(), loadBrackets()]);
+      } else {
+        setFeedback({
+          type: 'error',
+          text: res.message || 'Error al quitar judoka de la categoría.',
+        });
+      }
+    } catch {
+      setFeedback({ type: 'error', text: 'Error inesperado quitando inscripción.' });
+    } finally {
+      setIsMutatingCategoryAthlete(false);
+    }
+  };
+
+  const handleDeleteCategory = async (category: CategoryBracketStatus) => {
+    setIsMutatingCategoryAthlete(true);
+    try {
+      const res = await deleteTournamentCategoryAction({
+        categoryId: category.id,
+        tournamentId: tournament.id,
+      });
+      if (res.success) {
+        setFeedback({
+          type: 'success',
+          text: `Categoría "${category.name}" eliminada correctamente.`,
+        });
+        const remaining = categories.filter((c) => c.id !== category.id);
+        setSelectedCategoryId(remaining[0]?.id || null);
+        await Promise.all([loadRoster(), loadWeighIn(), loadBrackets()]);
+      } else {
+        setFeedback({
+          type: 'error',
+          text: res.message || 'No se pudo eliminar la categoría.',
+        });
+      }
+    } catch {
+      setFeedback({ type: 'error', text: 'Error inesperado eliminando categoría.' });
+    } finally {
+      setIsMutatingCategoryAthlete(false);
     }
   };
 
@@ -721,27 +849,6 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               </span>
             </div>
           </div>
-
-          {/* ACCIONES RÁPIDAS: INYECCIÓN DE PRUEBA */}
-          <div className="flex items-center space-x-2 flex-shrink-0">
-            <button
-              type="button"
-              onClick={handleInjectBaseAthletes}
-              className={`px-3.5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 shadow-lg flex-shrink-0 ${
-                registeredAthletes.length === 0
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                  : 'bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-300 border border-slate-700'
-              }`}
-              title="Inyecta o actualiza una nómina de prueba para probar todos los formatos de sorteo"
-            >
-              <Sparkles className="w-4 h-4 text-emerald-400" />
-              <span>
-                {registeredAthletes.length === 0
-                  ? 'Inyectar Nómina de Prueba'
-                  : 'Re-inyectar Nómina de Prueba'}
-              </span>
-            </button>
-          </div>
         </div>
 
         {/* MÉTRICAS */}
@@ -751,7 +858,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               Judokas Inscritos
             </span>
             <span className="text-xl font-black text-emerald-400 mt-0.5 block">
-              {registeredAthletes.length}
+              {uniqueRegisteredAthletesCount}
             </span>
           </div>
 
@@ -778,8 +885,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
               Pesaje Aprobado
             </span>
             <span className="text-xl font-black text-amber-400 mt-0.5 block">
-              {weighInAthletes.filter((a) => a.weigh_in_status === 'PASSED').length} /{' '}
-              {weighInAthletes.length}
+              {uniqueWeighInStats.passed} / {uniqueWeighInStats.total}
             </span>
           </div>
         </div>
@@ -796,7 +902,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             }`}
           >
             <Users className="w-4 h-4" />
-            <span>Inscripciones ({registeredAthletes.length})</span>
+            <span>Inscripciones ({uniqueRegisteredAthletesCount})</span>
           </button>
 
           <button
@@ -907,8 +1013,13 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           athleteRegistrationCounts={athleteRegistrationCounts}
           onOpenAdditionalCategoryModal={(ath) => {
             setAdditionalCatAthlete(ath);
-            const otherCat = categories.find((c) => c.id !== ath.category_id);
-            setAdditionalTargetCatId(otherCat ? otherCat.id : categories[0]?.id || '');
+            const enrolledIds = new Set(
+              registeredAthletes
+                .filter((r) => r.athlete_id === ath.athlete_id)
+                .map((r) => r.category_id)
+            );
+            const otherCat = categories.find((c) => !enrolledIds.has(c.id));
+            setAdditionalTargetCatId(otherCat ? otherCat.id : '');
           }}
           onOpenReassignModal={(ath) => {
             setReassigningAthlete(ath);
@@ -916,6 +1027,15 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
             setReassignTargetCatId(
               otherCat ? otherCat.id : ath.category_id || categories[0]?.id || ''
             );
+          }}
+          onRemoveRegistration={(reg) => {
+            if (
+              window.confirm(
+                `¿Quitar a ${reg.name} de la categoría "${reg.category_name}"?`
+              )
+            ) {
+              handleRemoveAthleteRegistration(reg);
+            }
           }}
           onRegistrationsConfirmed={() => {
             loadRoster();
@@ -935,10 +1055,10 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           weighInCategoryFilter={weighInCategoryFilter}
           onWeighInCategoryFilterChange={setWeighInCategoryFilter}
           weighInCategoriesList={weighInCategoriesList}
-          filteredWeighInAthletes={filteredWeighInAthletes}
+          weighInAthletes={weighInAthletes}
           weightInputs={weightInputs}
-          onWeightInputChange={(regId, val) =>
-            setWeightInputs((prev) => ({ ...prev, [regId]: val }))
+          onWeightInputChange={(athleteKey, val) =>
+            setWeightInputs((prev) => ({ ...prev, [athleteKey]: val }))
           }
           savingWeightId={savingWeightId}
           onRecordWeight={handleRecordWeight}
@@ -968,6 +1088,11 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           isGeneratingBrackets={isGeneratingBrackets}
           onGenerateBracket={handleGenerateBracket}
           onSaveBracketModification={handleSaveBracketModification}
+          registeredAthletes={registeredAthletes}
+          onAddAthleteToCategory={handleAddAthleteDirectToCategory}
+          onRemoveAthleteFromCategory={handleRemoveAthleteRegistration}
+          onDeleteCategory={handleDeleteCategory}
+          isMutatingCategoryAthlete={isMutatingCategoryAthlete}
         />
       )}
 
@@ -1015,10 +1140,15 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
       <AdditionalCategoryModal
         athlete={additionalCatAthlete}
         categories={categories}
+        alreadyRegisteredCategoryIds={
+          additionalCatAthlete
+            ? registeredAthletes
+                .filter((r) => r.athlete_id === additionalCatAthlete.athlete_id)
+                .map((r) => r.category_id)
+            : []
+        }
         targetCatId={additionalTargetCatId}
         onTargetCatIdChange={setAdditionalTargetCatId}
-        customCatName={additionalCustomCatName}
-        onCustomCatNameChange={setAdditionalCustomCatName}
         isSubmitting={isSubmittingAdditional}
         onConfirm={handleAddAthleteToAdditionalCategory}
         onClose={() => setAdditionalCatAthlete(null)}

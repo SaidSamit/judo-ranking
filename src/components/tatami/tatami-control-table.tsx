@@ -31,6 +31,7 @@ import {
   saveMatchLocally,
   getLocalMatch,
   getLocalDB,
+  clearMatchEventsLocally,
   LocalMatch,
 } from '@/lib/offline/db';
 import {
@@ -121,6 +122,16 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   useEffect(() => {
     async function loadOfflineData() {
       try {
+        if (isDemoMode) {
+          await clearMatchEventsLocally(currentMatch.id);
+          await saveMatchLocally(initialMatch);
+          setEvents([]);
+          setIsGoldenScore(false);
+          setMatchTimeRemaining(initialMatch.match_duration_seconds || 240);
+          setMatchStatus('SCHEDULED');
+          return;
+        }
+
         // Verificar si el combate ya existía en IndexedDB para preservar configuraciones (ej: duración modificada previa a F5)
         const storedMatch = await getLocalMatch(currentMatch.id);
         if (storedMatch && storedMatch.match_duration_seconds) {
@@ -148,7 +159,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
       }
     }
     loadOfflineData();
-  }, [currentMatch.id]);
+  }, [currentMatch.id, isDemoMode]);
 
   // ============================================================================
   // PROYECCIÓN MATEMÁTICA DEL MARCADOR (EVENT SOURCING)
@@ -160,10 +171,12 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   // ============================================================================
   // INTEGRACIÓN FASE 4: REALTIME BROADCAST & SYNC ENGINE
   // ============================================================================
-  const channelName = `tatami-${currentMatch.tatami_number}`;
+  const channelName = isDemoMode ? 'tatami-demo' : `tatami-${currentMatch.tatami_number}`;
+  const syncResponderRef = useRef<() => void>(() => {});
   const { broadcastState, isSubscribed: isRealtimeConnected } = useRealtimeBroadcast({
     channelName,
     mode: 'EMITTER',
+    onSyncRequested: () => syncResponderRef.current(),
   });
 
   const getLatestSnapshot = useCallback((): Partial<BroadcastMatchPayload> => {
@@ -197,6 +210,10 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
     osaekomiSeconds,
     projection,
   ]);
+
+  syncResponderRef.current = () => {
+    broadcastState(getLatestSnapshot() as BroadcastMatchPayload);
+  };
 
   const { pendingCount, isSyncing, isOnline } = useSyncEngine({
     matchId: currentMatch.id,
@@ -598,18 +615,38 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   // ============================================================================
   // REINICIO DE COMBATE EN MODO DEMOSTRACIÓN (PRÁCTICA)
   // ============================================================================
-  const handleResetDemo = useCallback(() => {
+  const handleResetDemo = useCallback(async () => {
+    const defaultDuration = initialMatch.match_duration_seconds || 240;
+    const resetMatch: LocalMatch = {
+      ...initialMatch,
+      match_duration_seconds: defaultDuration,
+      status: 'SCHEDULED',
+      updated_at: new Date().toISOString(),
+    };
+
     setIsClockRunning(false);
     setActiveOsaekomi(null);
     setOsaekomiSeconds(0);
     setIsGoldenScore(false);
     setEvents([]);
-    setMatchTimeRemaining(currentMatch.match_duration_seconds || 240);
+    setCurrentMatch(resetMatch);
+    setMatchTimeRemaining(defaultDuration);
     setMatchStatus('SCHEDULED');
     setNextScheduledMatch(null);
     setAutoAdvanceCountdown(null);
     setIsQueueEmpty(false);
-  }, [currentMatch.match_duration_seconds]);
+    setIsEditingTime(false);
+    setShowHansokuModal(false);
+    setShowBreakTimerModal(false);
+    auxTimerRef.current = null;
+
+    try {
+      await clearMatchEventsLocally(resetMatch.id);
+      await saveMatchLocally(resetMatch);
+    } catch (err) {
+      console.error('Error limpiando eventos demo en IndexedDB:', err);
+    }
+  }, [initialMatch]);
 
   // ============================================================================
   // CONTROL DEL RELOJ PRINCIPAL (HAJIME / MATE)
@@ -617,6 +654,11 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   const toggleClock = useCallback(() => {
     const nextRunning = !isClockRunning;
     setIsClockRunning(nextRunning);
+    if (nextRunning) {
+      setShowDurationDropdown(false);
+      setIsCustomDurationOpen(false);
+      setIsEditingTime(false);
+    }
     dispatchEvent(nextRunning ? 'START_CLOCK' : 'STOP_CLOCK', null);
 
     if (nextRunning && matchStatus === 'SCHEDULED') {
@@ -993,22 +1035,19 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   );
 
   // ============================================================================
-  // GESTIÓN OFICIAL DE GOLDEN SCORE (MUERTE SÚBITA - CONTEO ASCENDENTE)
+  // GESTIÓN OFICIAL DE GOLDEN SCORE (MUERTE SÚBITA - IRREVERSIBLE)
   // ============================================================================
   const handleStartGoldenScore = useCallback(() => {
-    if (matchTimeRemaining !== 0 || matchStatus === 'FINISHED') return;
+    if (isGoldenScore || matchStatus === 'FINISHED') return;
+    if (matchTimeRemaining !== 0) {
+      triggerWarning('El Golden Score solo puede iniciarse cuando el tiempo de combate llegue a 00:00.');
+      return;
+    }
     setIsClockRunning(false);
     setIsGoldenScore(true);
     setMatchTimeRemaining(0);
     dispatchEvent('START_GOLDEN_SCORE', null);
-  }, [matchTimeRemaining, matchStatus, dispatchEvent]);
-
-  const handleCancelGoldenScore = useCallback(() => {
-    setIsClockRunning(false);
-    setIsGoldenScore(false);
-    setMatchTimeRemaining(0);
-    dispatchEvent('STOP_GOLDEN_SCORE', null);
-  }, [dispatchEvent]);
+  }, [isGoldenScore, matchTimeRemaining, matchStatus, dispatchEvent, triggerWarning]);
 
   // Sincronizar estado reactivo de Golden Score con la proyección de eventos
   useEffect(() => {
@@ -1023,6 +1062,10 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   const handleAdjustRemainingTime = useCallback(
     (deltaSeconds: number) => {
       if (matchStatus === 'FINISHED') return;
+      if (isClockRunning) {
+        triggerWarning('Pausa el cronómetro [Espacio] antes de modificar el tiempo.');
+        return;
+      }
 
       setMatchTimeRemaining((prev) => {
         let nextTime: number;
@@ -1035,23 +1078,24 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         return nextTime;
       });
     },
-    [currentMatch.match_duration_seconds, isGoldenScore, matchStatus]
+    [currentMatch.match_duration_seconds, isClockRunning, isGoldenScore, matchStatus, triggerWarning]
   );
 
   const handleOpenEditTime = useCallback(() => {
     if (matchStatus === 'FINISHED') return;
     if (isClockRunning) {
-      setIsClockRunning(false);
-      dispatchEvent('STOP_CLOCK', null);
+      triggerWarning('Pausa el cronómetro [Espacio] antes de ajustar el tiempo.');
+      return;
     }
     const mins = Math.floor(Math.abs(matchTimeRemaining) / 60);
     const secs = Math.abs(matchTimeRemaining) % 60;
     setEditMinutes(String(mins).padStart(2, '0'));
     setEditSeconds(String(secs).padStart(2, '0'));
     setIsEditingTime(true);
-  }, [dispatchEvent, isClockRunning, matchStatus, matchTimeRemaining]);
+  }, [isClockRunning, matchStatus, matchTimeRemaining, triggerWarning]);
 
   const handleSaveEditTime = useCallback(() => {
+    if (isClockRunning || matchStatus === 'FINISHED') return;
     const m = parseInt(editMinutes, 10) || 0;
     const s = parseInt(editSeconds, 10) || 0;
     const totalSec = Math.max(0, m * 60 + s);
@@ -1064,7 +1108,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
 
     setMatchTimeRemaining(finalSec);
     setIsEditingTime(false);
-  }, [currentMatch.match_duration_seconds, editMinutes, editSeconds, isGoldenScore]);
+  }, [currentMatch.match_duration_seconds, editMinutes, editSeconds, isClockRunning, isGoldenScore, matchStatus]);
 
   // ============================================================================
   // CAMBIO DE DURACIÓN MÁXIMA OFICIAL (EXCLUSIVO PARA ESTE COMBATE EN LA MESA)
@@ -1072,6 +1116,10 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   const handleChangeMatchDuration = useCallback(
     async (newDurationSeconds: number) => {
       if (matchStatus === 'FINISHED') return;
+      if (isClockRunning) {
+        triggerWarning('Pausa el cronómetro [Espacio] antes de cambiar la duración del combate.');
+        return;
+      }
       setShowDurationDropdown(false);
       setIsCustomDurationOpen(false);
 
@@ -1106,7 +1154,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         );
       }
     },
-    [currentMatch, isDemoMode, matchStatus]
+    [currentMatch, isClockRunning, isDemoMode, matchStatus, triggerWarning]
   );
 
   // ============================================================================
@@ -1129,6 +1177,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
     onSwapOsaekomi: swapOsaekomi,
     onDeclareFinish: declareFinish,
     onAdjustTime: handleAdjustRemainingTime,
+    onStartGoldenScore: handleStartGoldenScore,
     isEnabled: !showHansokuModal && !showBreakTimerModal && !isEditingTime,
   });
 
@@ -1173,6 +1222,12 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
               ? 'Mesa de Demostración • Modo Práctica'
               : `${currentMatch.category_name || 'Categoría Oficial'} • Combate #${currentMatch.match_number}`}
           </span>
+          {isGoldenScore && (
+            <span className="px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest shadow-lg shadow-amber-500/40 animate-pulse flex items-center space-x-1">
+              <Zap className="w-3.5 h-3.5 fill-slate-950" />
+              <span>GOLDEN SCORE</span>
+            </span>
+          )}
         </div>
 
         <div className="flex items-center space-x-3">
@@ -1395,22 +1450,40 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         {/* ==================================================================== */}
         {/* PANEL CENTRAL: CRONÓMETRO, OSAEKOMI GAUGE Y ESTADO DE COMBATE */}
         {/* ==================================================================== */}
-        <section className="col-span-2 bg-slate-950 p-4 flex flex-col justify-between items-center border-r border-slate-800">
+        <section
+          className={`col-span-2 p-4 flex flex-col justify-between items-center transition-colors ${
+            isGoldenScore
+              ? 'bg-gradient-to-b from-amber-950/75 via-slate-950 to-amber-950/50 border-x-2 border-amber-500/80 shadow-[inset_0_0_35px_rgba(245,158,11,0.18)]'
+              : 'bg-slate-950 border-r border-slate-800'
+          }`}
+        >
           <div className="w-full text-center space-y-1">
             {/* Cabecera del Reloj y Selector de Duración Máxima (Solo este combate) */}
-            <div className="flex items-center justify-between px-1 relative">
-              <span className="text-[11px] uppercase font-mono tracking-widest text-slate-500 font-bold">
-                {isGoldenScore ? 'GOLDEN SCORE' : 'TIEMPO COMBATE'}
-              </span>
+            <div className={`flex items-center ${isGoldenScore ? 'justify-center' : 'justify-between'} px-1 relative`}>
+              {isGoldenScore ? (
+                <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[11px] uppercase font-black tracking-widest shadow-md shadow-amber-500/30">
+                  <Zap className="w-3 h-3 fill-slate-950" />
+                  <span>GOLDEN SCORE</span>
+                </span>
+              ) : (
+                <span className="text-[11px] uppercase font-mono tracking-widest text-slate-500 font-bold">
+                  TIEMPO COMBATE
+                </span>
+              )}
 
-              {/* Botón selector de duración máxima (Solo para este combate individual) */}
+              {/* Botón selector de duración máxima (Solo para este combate individual y en pausa) */}
               {!isGoldenScore && (
                 <div className="relative">
                   <button
                     type="button"
+                    disabled={isClockRunning || matchStatus === 'FINISHED'}
                     onClick={() => setShowDurationDropdown((prev) => !prev)}
-                    className="flex items-center space-x-1 text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-400 border border-slate-800 transition"
-                    title="Modificar tiempo límite para este combate individual"
+                    className="flex items-center space-x-1 text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-400 border border-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-900"
+                    title={
+                      isClockRunning
+                        ? 'Pausa el reloj [Espacio] para cambiar la duración'
+                        : 'Modificar tiempo límite para este combate individual'
+                    }
                   >
                     <Clock className="w-3 h-3 text-amber-400" />
                     <span>{Math.floor((currentMatch.match_duration_seconds || 240) / 60)} min</span>
@@ -1518,8 +1591,8 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
                 className={`text-6xl font-black font-mono tracking-tighter cursor-pointer ${
                   isGoldenScore
                     ? isClockRunning
-                      ? 'text-amber-300'
-                      : 'text-amber-500'
+                      ? 'text-amber-300 drop-shadow-[0_0_16px_rgba(245,158,11,0.6)]'
+                      : 'text-amber-400 drop-shadow-[0_0_12px_rgba(245,158,11,0.45)]'
                     : matchTimeRemaining === 0
                     ? 'text-red-500 animate-pulse'
                     : isClockRunning
@@ -1527,7 +1600,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
                     : 'text-amber-400'
                 }`}
                 onClick={toggleClock}
-                title="Clic para iniciar/pausar [Espacio]. Usa los botones o Ajustar para modificar."
+                title="Clic para iniciar/pausar [Espacio]. Usa los botones o Ajustar cuando esté en pausa."
               >
                 {formatTime(matchTimeRemaining)}
               </div>
@@ -1588,32 +1661,32 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
 
             <span className="text-xs text-slate-500 font-mono block">[Espacio] Hajime / Mate</span>
 
-            {/* BARRA DE AJUSTE RÁPIDO DE TIEMPO (ADELANTAR / RETROCEDER) */}
+            {/* BARRA DE AJUSTE RÁPIDO DE TIEMPO (ADELANTAR / RETROCEDER - SOLO EN PAUSA) */}
             <div className="pt-1.5 flex items-center justify-center space-x-1">
               <button
                 type="button"
                 onClick={() => handleAdjustRemainingTime(-5)}
-                disabled={matchStatus === 'FINISHED'}
-                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition"
-                title="Retroceder 5 segundos [Atajo: -]"
+                disabled={isClockRunning || matchStatus === 'FINISHED'}
+                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:hover:text-slate-400"
+                title={isClockRunning ? 'Pausa el reloj para ajustar tiempo' : 'Retroceder 5 segundos [Atajo: -]'}
               >
                 -5s
               </button>
               <button
                 type="button"
                 onClick={() => handleAdjustRemainingTime(-1)}
-                disabled={matchStatus === 'FINISHED'}
-                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition"
-                title="Retroceder 1 segundo [Atajo: Shift + -]"
+                disabled={isClockRunning || matchStatus === 'FINISHED'}
+                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:hover:text-slate-400"
+                title={isClockRunning ? 'Pausa el reloj para ajustar tiempo' : 'Retroceder 1 segundo [Atajo: Shift + -]'}
               >
                 -1s
               </button>
               <button
                 type="button"
                 onClick={handleOpenEditTime}
-                disabled={matchStatus === 'FINISHED'}
-                className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-amber-500/40 hover:border-amber-500 text-[11px] font-bold text-amber-400 hover:text-amber-300 transition flex items-center space-x-1"
-                title="Escribir tiempo exacto MM:SS ordenado por árbitro"
+                disabled={isClockRunning || matchStatus === 'FINISHED'}
+                className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-amber-500/40 hover:border-amber-500 text-[11px] font-bold text-amber-400 hover:text-amber-300 transition flex items-center space-x-1 disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:hover:border-amber-500/40"
+                title={isClockRunning ? 'Pausa el reloj para ajustar tiempo' : 'Escribir tiempo exacto MM:SS ordenado por árbitro'}
               >
                 <Edit2 className="w-3 h-3" />
                 <span>Ajustar</span>
@@ -1621,74 +1694,55 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
               <button
                 type="button"
                 onClick={() => handleAdjustRemainingTime(1)}
-                disabled={matchStatus === 'FINISHED'}
-                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition"
-                title="Adelantar 1 segundo [Atajo: Shift + +]"
+                disabled={isClockRunning || matchStatus === 'FINISHED'}
+                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:hover:text-slate-400"
+                title={isClockRunning ? 'Pausa el reloj para ajustar tiempo' : 'Adelantar 1 segundo [Atajo: Shift + +]'}
               >
                 +1s
               </button>
               <button
                 type="button"
                 onClick={() => handleAdjustRemainingTime(5)}
-                disabled={matchStatus === 'FINISHED'}
-                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition"
-                title="Adelantar 5 segundos [Atajo: +]"
+                disabled={isClockRunning || matchStatus === 'FINISHED'}
+                className="px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[11px] font-mono font-bold text-slate-400 hover:text-white transition disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-slate-900 disabled:hover:text-slate-400"
+                title={isClockRunning ? 'Pausa el reloj para ajustar tiempo' : 'Adelantar 5 segundos [Atajo: +]'}
               >
                 +5s
               </button>
             </div>
             <span className="text-[10px] text-slate-600 block">
-              Atajos: [+] [-] para 5s • Shift para 1s
+              {isClockRunning
+                ? 'Pausa el reloj [Espacio] para ajustar tiempo'
+                : 'Atajos: [+] [-] para 5s • Shift para 1s'}
             </span>
 
-            {/* Control y Estado de Golden Score */}
-            <div className="pt-2 w-full">
-              {!isGoldenScore ? (
-                <div>
-                  <button
-                    type="button"
-                    disabled={matchTimeRemaining !== 0 || matchStatus === 'FINISHED'}
-                    onClick={handleStartGoldenScore}
-                    className={`w-full py-2 px-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center justify-center space-x-1.5 ${matchTimeRemaining === 0 && matchStatus !== 'FINISHED'
-                        ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/30 animate-pulse cursor-pointer'
-                        : 'bg-slate-900 border border-slate-800 text-slate-600 cursor-not-allowed opacity-60'
-                      }`}
-                    title={
-                      matchTimeRemaining === 0
-                        ? 'Iniciar periodo oficial de Golden Score (muerte súbita)'
-                        : 'Solo disponible cuando el tiempo de combate llega a 00:00'
-                    }
-                  >
-                    <Zap className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span>Iniciar Golden Score</span>
-                  </button>
-                  {matchTimeRemaining !== 0 && (
-                    <span className="text-[10px] text-slate-600 block mt-1">
-                      Disponible al agotar tiempo (00:00)
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  <div className="bg-amber-500/20 border border-amber-500/60 rounded-xl px-2 py-1.5 text-center">
-                    <div className="flex items-center justify-center space-x-1 text-amber-400 font-black text-xs tracking-wider uppercase">
-                      <Zap className="w-3.5 h-3.5 fill-amber-400 animate-bounce" />
-                      <span>Modo Golden Score Activo</span>
-                    </div>
-                    <span className="text-[10px] text-amber-300/80 block mt-0.5">
-                      Muerte súbita • Conteo ascendente
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleCancelGoldenScore}
-                    className="w-full text-[10px] font-bold text-slate-400 hover:text-red-400 transition underline cursor-pointer"
-                  >
-                    ✕ Salir de Golden Score
-                  </button>
-                </div>
-              )}
-            </div>
+            {/* Control de inicio de Golden Score (cuando está inactivo) */}
+            {!isGoldenScore && (
+              <div className="pt-2 w-full">
+                <button
+                  type="button"
+                  disabled={matchTimeRemaining !== 0 || matchStatus === 'FINISHED'}
+                  onClick={handleStartGoldenScore}
+                  className={`w-full py-2 px-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center justify-center space-x-1.5 ${matchTimeRemaining === 0 && matchStatus !== 'FINISHED'
+                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/30 animate-pulse cursor-pointer'
+                      : 'bg-slate-900 border border-slate-800 text-slate-600 cursor-not-allowed opacity-60'
+                    }`}
+                  title={
+                    matchTimeRemaining === 0
+                      ? 'Iniciar periodo oficial de Golden Score [Tecla G]'
+                      : 'Solo disponible cuando el tiempo de combate llega a 00:00 [Tecla G]'
+                  }
+                >
+                  <Zap className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>Iniciar Golden Score [G]</span>
+                </button>
+                {matchTimeRemaining !== 0 && (
+                  <span className="text-[10px] text-slate-600 block mt-1">
+                    Disponible al agotar tiempo (00:00)
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Cronómetro de Retención Osaekomi */}
