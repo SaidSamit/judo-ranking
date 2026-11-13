@@ -18,9 +18,10 @@ import {
   FileDown,
 } from 'lucide-react';
 import { BracketViewer } from '@/components/admin/bracket-viewer';
+import { downloadElementAsPdf, downloadMultiplePagesAsPdf } from '@/lib/utils/pdf-downloader';
 import { CategoryBracketStatus } from '@/app/actions/brackets';
 import { RegisteredAthleteSummary } from '@/app/actions/registrations';
-import { BracketResult } from '@/lib/rules/bracket-engine';
+import { BracketResult, generateCategoryBracket } from '@/lib/rules/bracket-engine';
 import { sortCategories } from '@/lib/rules/judo-categories';
 
 interface TatamiDistItem {
@@ -224,8 +225,30 @@ export function TournamentBracketsTab({
     ).length;
   }, [registeredAthletes]);
 
-  const handleExportWeighedPdf = () => {
-    window.print();
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  const handleExportWeighedPdf = async () => {
+    const el = document.getElementById('printable-brackets-container');
+    if (!el) return;
+    setIsExportingPdf(true);
+    try {
+      // Obtener cada hoja oficial de categoría (.official-bracket-page)
+      // para exportar página por página sin cortes de hoja ni franjas negras
+      const pages = Array.from(el.querySelectorAll<HTMLElement>('.official-bracket-page'));
+
+      if (pages.length > 0) {
+        await downloadMultiplePagesAsPdf(pages, {
+          filename: `Llaves_Oficiales_${tournament.name.replace(/[\s/\\:]+/g, '_')}`,
+          orientation: 'landscape',
+          backgroundColor: '#0f172a',
+          fitToPage: true,
+        });
+      }
+    } catch (err) {
+      console.error('Error generando PDF de llaves:', err);
+    } finally {
+      setIsExportingPdf(false);
+    }
   };
 
   return (
@@ -252,16 +275,25 @@ export function TournamentBracketsTab({
               <button
                 type="button"
                 onClick={handleExportWeighedPdf}
-                disabled={weighedCategories.length === 0}
+                disabled={weighedCategories.length === 0 || isExportingPdf}
                 className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 border shadow ${
-                  weighedCategories.length > 0
-                    ? 'bg-slate-800 hover:bg-slate-700 text-amber-400 border-amber-500/40 hover:border-amber-400'
+                  weighedCategories.length > 0 && !isExportingPdf
+                    ? 'bg-slate-800 hover:bg-slate-700 text-amber-400 border-amber-500/40 hover:border-amber-400 cursor-pointer'
                     : 'bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed opacity-60'
                 }`}
-                title="Exportar a PDF todas las categorías con judokas pesados"
+                title="Descargar en PDF las hojas oficiales de todas las categorías con judokas pesados"
               >
-                <FileDown className="w-3.5 h-3.5" />
-                <span>Exportar PDF ({weighedCategories.length} Pesadas)</span>
+                {isExportingPdf ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                    <span>Generando PDF...</span>
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="w-3.5 h-3.5" />
+                    <span>Exportar PDF ({weighedCategories.length} Pesadas)</span>
+                  </>
+                )}
               </button>
 
               <button
@@ -877,134 +909,52 @@ export function TournamentBracketsTab({
       </div>
 
       {/* ==================================================================== */}
-      {/* 2. DOCUMENTO OFICIAL DE CATEGORÍAS PESADAS (SOLO VISIBLE EN PDF)     */}
+      {/* 2. DOCUMENTO OFICIAL DE CATEGORÍAS PESADAS (DESCARGA DIRECTA PDF)    */}
       {/* ==================================================================== */}
-      <div className="hidden print:block text-slate-950 bg-white p-6 space-y-6">
-        {/* CABECERA OFICIAL */}
-        <div className="border-b-2 border-slate-950 pb-4 flex justify-between items-end">
-          <div>
-            <h1 className="text-2xl font-black uppercase tracking-wider">{tournament.name}</h1>
-            <h2 className="text-sm font-bold text-slate-700">
-              Planilla Oficial de Categorías Pesadas y Sorteo de Llaves
-            </h2>
-          </div>
-          <div className="text-right text-xs font-mono text-slate-600">
-            <p>Fecha de emisión: {new Date().toLocaleDateString('es-CL')}</p>
-            <p>{weighedCategories.length} categorías con pesaje • {totalWeighedAthletes} judokas pesados</p>
-          </div>
-        </div>
+      <div
+        id="printable-brackets-container"
+        className="fixed -left-[9999px] top-0 w-[1200px] z-[-50] bg-slate-950 text-slate-100 p-6 space-y-8 pointer-events-none print:hidden"
+        aria-hidden="true"
+      >
+        {weighedCategories.map((cat) => {
+          const athletes = (registeredAthletes || []).filter(
+            (a) => a.category_id === cat.id && (a.weigh_in_status === 'PASSED' || a.actual_weight !== null)
+          );
+          if (athletes.length === 0) return null;
 
-        {/* RESUMEN DE DISTRIBUCIÓN POR TATAMI */}
-        {tatamiDistribution.length > 0 && (
-          <div className="p-3 border border-slate-400 rounded-xl bg-slate-50 flex flex-wrap items-center justify-between text-xs font-mono">
-            <span><strong>Total Categorías Pesadas:</strong> {weighedCategories.length}</span>
-            <span><strong>Total Judokas Aprobados:</strong> {totalWeighedAthletes}</span>
-            <div className="flex items-center space-x-3">
-              {tatamiDistribution.map((t) => (
-                <span key={t.tatamiNum}>
-                  Tatami #{t.tatamiNum}: <strong>{t.categoriesCount} cat.</strong> ({t.athletesCount} judokas)
-                </span>
-              ))}
+          const catBracket =
+            categoryBrackets[cat.id] ||
+            generateCategoryBracket(
+              athletes.map((a, i) => ({
+                id: a.athlete_id || a.id,
+                name: a.name,
+                club_name: a.club_name,
+                seed: i + 1,
+                weight: a.actual_weight || undefined,
+              })),
+              {
+                organization_id: tournament.id,
+                tournament_id: tournament.id,
+                category_id: cat.id,
+                category_name: cat.name,
+                tatami_number: cat.assigned_tatami_number || 1,
+                match_duration_seconds: cat.match_duration_seconds || 240,
+                preferred_format_5: preferredFormat5ByCategory[cat.id] || 'DOUBLE_POOL_5',
+              }
+            );
+
+          return (
+            <div
+              key={cat.id}
+              className="official-bracket-page w-[1150px] bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl space-y-2"
+            >
+              <BracketViewer
+                bracketResult={catBracket}
+                categoryName={`${tournament.name} • ${cat.name} (Tatami #${cat.assigned_tatami_number})`}
+              />
             </div>
-          </div>
-        )}
-
-        {/* LISTADO DE CATEGORÍAS PESADAS */}
-        <div className="space-y-6">
-          {weighedCategories.length === 0 ? (
-            <div className="py-12 text-center text-slate-500 italic text-sm">
-              No hay categorías con judokas pesados en este momento.
-            </div>
-          ) : (
-            weighedCategories.map((cat, idx) => {
-              const athletes = (registeredAthletes || []).filter(
-                (a) => a.category_id === cat.id && (a.weigh_in_status === 'PASSED' || a.actual_weight !== null)
-              );
-
-              return (
-                <div
-                  key={cat.id}
-                  className="border-2 border-slate-700 rounded-xl p-4 space-y-3 break-inside-avoid page-break-inside-avoid shadow-sm"
-                >
-                  <div className="flex justify-between items-center border-b border-slate-300 pb-2">
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                        Categoría #{idx + 1}
-                      </span>
-                      <h3 className="text-base font-black text-slate-950">{cat.name}</h3>
-                    </div>
-                    <div className="text-right text-xs font-mono">
-                      <span className="bg-slate-200 border border-slate-400 px-2.5 py-0.5 rounded font-black text-slate-900">
-                        Tatami #{cat.assigned_tatami_number}
-                      </span>
-                      <p className="text-[11px] text-slate-600 mt-0.5">
-                        {Math.round((cat.match_duration_seconds || 240) / 60)} min • {athletes.length} atleta{athletes.length === 1 ? '' : 's'} pesado{athletes.length === 1 ? '' : 's'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* TABLA DE JUDOKAS PESADOS */}
-                  <table className="w-full text-xs text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-300 text-slate-600 font-bold">
-                        <th className="py-1 px-2 w-8">#</th>
-                        <th className="py-1 px-2">Nombre del Judoka</th>
-                        <th className="py-1 px-2">Club / Asociación</th>
-                        <th className="py-1 px-2 w-24 text-center">Peso Exacto</th>
-                        <th className="py-1 px-2 w-24 text-center">Estado</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200 font-mono">
-                      {athletes.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="py-2.5 text-center text-slate-400 italic">
-                            Sin atletas pesados registrados
-                          </td>
-                        </tr>
-                      ) : (
-                        athletes.map((ath, aIdx) => (
-                          <tr key={ath.id}>
-                            <td className="py-1.5 px-2 font-bold text-slate-500">{aIdx + 1}</td>
-                            <td className="py-1.5 px-2 font-black text-slate-900 font-sans">{ath.name}</td>
-                            <td className="py-1.5 px-2 text-slate-700 font-sans">{ath.club_name || '-'}</td>
-                            <td className="py-1.5 px-2 text-center font-bold">
-                              {ath.actual_weight !== null ? `${ath.actual_weight} kg` : '-'}
-                            </td>
-                            <td className="py-1.5 px-2 text-center">
-                              <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">
-                                Aprobado
-                              </span>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-
-                  {/* ESTADO DE LA LLAVE */}
-                  <div className="pt-1 border-t border-slate-200 flex justify-between items-center text-[11px] text-slate-500 font-mono">
-                    <span>
-                      Estado de Llave:{' '}
-                      <strong className={cat.matches_generated ? 'text-emerald-700 font-bold' : 'text-amber-700 font-bold'}>
-                        {cat.matches_generated ? 'Sorteada / Generada' : 'Pendiente de Sorteo'}
-                      </strong>
-                    </span>
-                    <span>
-                      Sistema:{' '}
-                      {cat.passed_weigh_in === 1
-                        ? 'Campeón Directo'
-                        : cat.passed_weigh_in === 2
-                        ? 'Mejor de 3'
-                        : cat.passed_weigh_in <= 5
-                        ? 'Round Robin'
-                        : 'Eliminatoria Doble Bronce'}
-                    </span>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
+          );
+        })}
       </div>
     </div>
   );

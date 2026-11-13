@@ -75,7 +75,7 @@ export function AdminSidebar({ userProfile }: AdminSidebarProps = {}) {
   // Estados de avatar y personalización de perfil
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [profileName, setProfileName] = useState<string>(userProfile?.name || 'Director de Torneo');
-  const [profileOrg, setProfileOrg] = useState<string>(userProfile?.organization || 'Asoc. Judo Tarapacá');
+  const [profileOrg, setProfileOrg] = useState<string>(userProfile?.organization || '');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -94,18 +94,23 @@ export function AdminSidebar({ userProfile }: AdminSidebarProps = {}) {
       const savedName = localStorage.getItem('judo_admin_name');
       if (savedName) setProfileName(savedName);
       const savedOrg = localStorage.getItem('judo_admin_org');
-      if (savedOrg) setProfileOrg(savedOrg);
+      // Si existía el valor estático antiguo "Asoc. Judo Tarapacá", purgarlo inmediatamente
+      if (savedOrg === 'Asoc. Judo Tarapacá') {
+        localStorage.removeItem('judo_admin_org');
+      } else if (savedOrg) {
+        setProfileOrg(savedOrg);
+      }
     } catch (e) {
       // Ignorar errores en navegadores restrictivos
     }
   }, []);
 
-  // Sincronizar con userProfile si no se ha sobreescrito en localStorage
+  // Sincronizar con userProfile cuando se recibe o actualiza desde el servidor
   useEffect(() => {
     if (userProfile?.name && !localStorage.getItem('judo_admin_name')) {
       setProfileName(userProfile.name);
     }
-    if (userProfile?.organization && !localStorage.getItem('judo_admin_org')) {
+    if (userProfile?.organization) {
       setProfileOrg(userProfile.organization);
     }
   }, [userProfile]);
@@ -547,7 +552,7 @@ export function AdminSidebar({ userProfile }: AdminSidebarProps = {}) {
                   type="text"
                   value={profileOrg}
                   onChange={(e) => setProfileOrg(e.target.value)}
-                  placeholder="Ej: Asoc. Regional de Judo Tarapacá"
+                  placeholder="Ej: Asociación Regional de Judo Iquique"
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400 placeholder-slate-500"
                 />
               </div>

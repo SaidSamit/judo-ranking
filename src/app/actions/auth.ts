@@ -104,7 +104,7 @@ export async function loginAdminAction(
 
     // 3. Validar perfil en la tabla profiles si tenemos usuario autenticado
     let displayName = 'Director de Torneo';
-    let displayOrg = 'Asoc. Judo Tarapacá';
+    let displayOrg = '';
     let initials = 'DT';
 
     if (authUser) {
@@ -114,9 +114,9 @@ export async function loginAdminAction(
         .eq('id', authUser.id)
         .maybeSingle();
 
-      const userRole = profile?.role || 'ADMIN';
+      const userRole = (profile?.role || 'ADMIN').toUpperCase();
 
-      if (userRole !== 'ADMIN') {
+      if (userRole !== 'ADMIN' && userRole !== 'SUPER_ADMIN' && userRole !== 'DIRECTOR') {
         return {
           success: false,
           message: 'Tu cuenta no posee permisos de Director o Administrador.',
@@ -237,23 +237,65 @@ export async function getAdminSessionProfileAction(): Promise<AdminUserProfile> 
   let organization = cookieStore.get('judo_admin_org')?.value;
   let initials = cookieStore.get('judo_admin_initials')?.value;
 
-  if (!name || !organization || !initials) {
-    const rawUser = email.split('@')[0].toLowerCase();
+  // Si la organización guardada en cookie era la antigua estática 'Asoc. Judo Tarapacá', descartarla
+  if (organization === 'Asoc. Judo Tarapacá') {
+    organization = undefined;
+  }
+
+  // Consultar en Supabase para obtener la organización real y datos del perfil
+  try {
+    const supabase = createAdminClient();
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('first_name, last_name, role, organization_id, email')
+      .ilike('email', email)
+      .maybeSingle();
+
+    if (profile) {
+      if (profile.organization_id) {
+        const { data: org } = await supabase
+          .from('organizations')
+          .select('name')
+          .eq('id', profile.organization_id)
+          .maybeSingle();
+        if (org?.name) {
+          organization = org.name;
+        }
+      }
+
+      if (profile.first_name || profile.last_name) {
+        const fullName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
+        if (fullName && fullName.toLowerCase() !== 'director torneo') {
+          name = fullName;
+          initials = `${(profile.first_name || '')[0] || ''}${(profile.last_name || '')[0] || ''}`.toUpperCase() || 'DT';
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[getAdminSessionProfileAction] Error consultando perfil en Supabase:', err);
+  }
+
+  // Fallbacks para nombre e iniciales según el usuario si no están en profiles
+  const rawUser = email.split('@')[0].toLowerCase();
+  if (!name) {
     if (rawUser === 'admin') {
-      name = name || 'Administrador General';
+      name = 'Administrador General';
       initials = initials || 'AG';
     } else if (rawUser === 'comision') {
-      name = name || 'Comisión Técnica';
+      name = 'Comisión Técnica';
       initials = initials || 'CT';
     } else if (rawUser === 'director') {
-      name = name || 'Director de Torneo';
+      name = 'Director de Torneo';
       initials = initials || 'DT';
     } else {
-      name = name || (rawUser.charAt(0).toUpperCase() + rawUser.slice(1));
+      name = rawUser.charAt(0).toUpperCase() + rawUser.slice(1);
       initials = initials || rawUser.slice(0, 2).toUpperCase();
     }
-    organization = organization || 'Asoc. Judo Tarapacá';
   }
+  if (!initials) {
+    initials = name.slice(0, 2).toUpperCase() || 'DT';
+  }
+  organization = organization || '';
 
   return {
     email,
