@@ -1,8 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Trophy, RefreshCw } from 'lucide-react';
 import { CategoryPodiumResult } from '@/app/actions/brackets';
+import { compareJudoCategories } from '@/lib/rules/judo-categories';
 
 export interface ClubMedalRow {
   club: string;
@@ -27,6 +28,14 @@ export function TournamentResultsTab({
   loadingPodiums,
   onRefreshPodiums,
 }: TournamentResultsTabProps) {
+  const sortedPodiumResults = useMemo(() => {
+    return [...podiumResults].sort((a, b) =>
+      compareJudoCategories(
+        { name: a.categoryName, gender: a.gender },
+        { name: b.categoryName, gender: b.gender }
+      )
+    );
+  }, [podiumResults]);
   return (
     <div className="space-y-6">
       <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
@@ -121,7 +130,7 @@ export function TournamentResultsTab({
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {podiumResults.map((pr) => {
+            {sortedPodiumResults.map((pr) => {
               const isUncontested =
                 (pr.totalMatches <= 1 && !pr.podium.secondPlace && pr.podium.firstPlace) ||
                 (!pr.podium.secondPlace && !pr.podium.thirdPlaceA && !pr.podium.thirdPlaceB && pr.podium.firstPlace);

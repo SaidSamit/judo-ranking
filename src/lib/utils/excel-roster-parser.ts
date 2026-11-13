@@ -14,19 +14,33 @@ export interface ParsedRosterAthlete extends DraftAthletePayload {
   birth_year: number;
   club_name: string;
   grade?: string;
+  needsReview?: boolean;
+  reviewReason?: string;
+}
+
+export interface NormalizedCategoryResult {
+  category: string;
+  isValid: boolean;
+  divisionLabel?: string;
+  weightFormatted?: string;
+  reviewReason?: string;
 }
 
 /**
  * Normaliza la denominación de categoría a partir de división, género y peso.
  * Ej: "SUB 15", "MASCULINO", "-48" -> "Sub-15 Masculino -48kg"
  * Ej: "SUB 18", "FEMENINO", "-52" -> "Cadetes (Sub-18) Femenino -52kg"
+ *
+ * REGLA ESTRICTA DE CERTEZA 100%:
+ * Si falta el peso o la división no se pueden inferir con 100% de certeza matemática o reglamentaria,
+ * NO inventa ni adivina la categoría. Retorna isValid: false y reviewReason explicativo.
  */
 export function normalizeJudoCategory(
   rawCategory: string,
   gender: 'M' | 'F',
   rawWeight?: string | number,
   birthYear?: number
-): string {
+): NormalizedCategoryResult {
   const cleanCat = (rawCategory || '').trim();
   const cleanWeightStr = String(rawWeight || '')
     .trim()
@@ -44,12 +58,25 @@ export function normalizeJudoCategory(
   const genderLabel = gender === 'M' ? 'Masculino' : 'Femenino';
   const lower = cleanCat.toLowerCase();
 
-  // Si la categoría ya viene completa (ej: "Cadetes (Sub-18) Masculino -60kg")
-  if (lower.includes('kg') && (lower.includes('masculino') || lower.includes('femenino'))) {
-    return cleanCat;
+  // 1. Si la categoría ya viene completa con peso y género en el texto
+  // (ej: "Cadetes (Sub-18) Masculino -60kg", "Sub-15 Femenino -52kg")
+  const hasKg = lower.includes('kg');
+  const hasGenderInCat =
+    lower.includes('masculino') ||
+    lower.includes('femenino') ||
+    lower.includes('varones') ||
+    lower.includes('damas');
+  const hasSpecificWeight = /[+-]?\d{2,3}\s*kg/i.test(cleanCat);
+
+  if (hasKg && (hasGenderInCat || hasSpecificWeight)) {
+    return {
+      category: cleanCat,
+      isValid: true,
+      weightFormatted: cleanCat.match(/[+-]?\d{2,3}\s*kg/i)?.[0] || '',
+    };
   }
 
-  // Mapeo estándar según divisiones oficiales de judo
+  // 2. Mapeo estándar según divisiones oficiales de judo
   let divisionLabel = '';
   if (lower.includes('sub 9') || lower.includes('sub-9')) {
     divisionLabel = 'Sub-9';
@@ -71,49 +98,88 @@ export function normalizeJudoCategory(
     divisionLabel = 'Master';
   }
 
-  // Fallback si no viene división: calcular según año de nacimiento
-  if (!divisionLabel && birthYear) {
+  // Fallback si no viene división en texto: calcular según año de nacimiento (100% certeza de edad)
+  if (!divisionLabel && birthYear && birthYear >= 1940) {
     const computed = getAvailableCategoriesForAthlete(birthYear, gender);
-    divisionLabel = computed.divisionName || 'Oficial';
+    divisionLabel = computed.divisionName || '';
   }
 
+  // A. Si tiene división Y tiene peso -> 100% Certeza
   if (divisionLabel && weightFormatted) {
-    return `${divisionLabel} ${genderLabel} ${weightFormatted}`;
+    return {
+      category: `${divisionLabel} ${genderLabel} ${weightFormatted}`,
+      isValid: true,
+      divisionLabel,
+      weightFormatted,
+    };
   }
 
-  if (divisionLabel) {
-    return `${divisionLabel} ${genderLabel}`;
+  // B. Si tiene división pero NO tiene peso -> FALTA PESO (Sin 100% de certeza)
+  if (divisionLabel && !weightFormatted) {
+    return {
+      category: `${divisionLabel} ${genderLabel} (Falta peso)`,
+      isValid: false,
+      divisionLabel,
+      reviewReason: 'Falta especificar peso reglamentario',
+    };
   }
 
-  return cleanCat || (gender === 'M' ? 'Senior Masculino -73kg' : 'Senior Femenino -52kg');
+  // C. Si tiene peso pero NO tiene división reconocida
+  if (!divisionLabel && weightFormatted) {
+    return {
+      category: `Categoría ${genderLabel} ${weightFormatted} (Falta división)`,
+      isValid: false,
+      weightFormatted,
+      reviewReason: 'Falta división etaria',
+    };
+  }
+
+  // D. Ni peso ni división
+  return {
+    category: cleanCat ? `${cleanCat} (Revisión Requerida)` : '(Sin categoría asignada)',
+    isValid: false,
+    reviewReason: 'Falta peso y categoría reglamentaria',
+  };
 }
 
 /**
  * Parsea una fecha en texto (DD-MM-AAAA, DD/MM/AAAA) o número serial de Excel.
+ * Retorna isValid: true sólo si la fecha/año fue extraída con certeza entre 1940 y el año actual.
  */
-function parseBirthDate(rawDate: any): { birthDateStr: string; birthYear: number } {
+function parseBirthDate(rawDate: any): { birthDateStr: string; birthYear: number; isValid: boolean } {
   const currentYear = new Date().getFullYear();
   let birthYear = 2008;
   let birthDateStr = '2008-01-01';
 
-  if (!rawDate) {
-    return { birthDateStr, birthYear };
+  if (!rawDate && rawDate !== 0) {
+    return { birthDateStr, birthYear, isValid: false };
   }
 
-  // 1. Si viene como número serial de Excel (ej: 43266)
+  // 1. Si viene como número serial de Excel (ej: 43266) o año directo (ej: 2009)
   if (typeof rawDate === 'number') {
+    if (rawDate >= 1940 && rawDate <= currentYear) {
+      return {
+        birthDateStr: `${rawDate}-01-01`,
+        birthYear: rawDate,
+        isValid: true,
+      };
+    }
     const parsedDate = XLSX.SSF.parse_date_code(rawDate);
-    if (parsedDate && parsedDate.y) {
+    if (parsedDate && parsedDate.y && parsedDate.y >= 1940 && parsedDate.y <= currentYear) {
       birthYear = parsedDate.y;
       const m = String(parsedDate.m).padStart(2, '0');
       const d = String(parsedDate.d).padStart(2, '0');
       birthDateStr = `${birthYear}-${m}-${d}`;
-      return { birthDateStr, birthYear };
+      return { birthDateStr, birthYear, isValid: true };
     }
+    return { birthDateStr, birthYear, isValid: false };
   }
 
   // 2. Si viene como string
   const str = String(rawDate).trim();
+  if (!str) {
+    return { birthDateStr, birthYear, isValid: false };
+  }
 
   // Formato DD-MM-AAAA o DD/MM/AAAA
   const dmyMatch = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
@@ -125,6 +191,7 @@ function parseBirthDate(rawDate: any): { birthDateStr: string; birthYear: number
       return {
         birthDateStr: `${year}-${month}-${day}`,
         birthYear: year,
+        isValid: true,
       };
     }
   }
@@ -139,6 +206,7 @@ function parseBirthDate(rawDate: any): { birthDateStr: string; birthYear: number
       return {
         birthDateStr: `${year}-${month}-${day}`,
         birthYear: year,
+        isValid: true,
       };
     }
   }
@@ -149,10 +217,11 @@ function parseBirthDate(rawDate: any): { birthDateStr: string; birthYear: number
     return {
       birthDateStr: `${yearOnly}-01-01`,
       birthYear: yearOnly,
+      isValid: true,
     };
   }
 
-  return { birthDateStr, birthYear };
+  return { birthDateStr, birthYear, isValid: false };
 }
 
 /**
@@ -293,12 +362,33 @@ export function parseExcelRoster(fileBuffer: ArrayBuffer): {
 
       // Género
       const rawGender =
-        colMap['genero'] !== undefined ? String(row[colMap['genero']] || '').trim().toUpperCase() : 'M';
-      const gender: 'M' | 'F' = rawGender.startsWith('F') || rawGender.includes('FEM') ? 'F' : 'M';
+        colMap['genero'] !== undefined ? String(row[colMap['genero']] || '').trim().toUpperCase() : '';
+      let gender: 'M' | 'F' = 'M';
+      let hasValidGender = false;
+
+      if (rawGender) {
+        if (
+          rawGender.startsWith('F') ||
+          rawGender.includes('FEM') ||
+          rawGender.includes('MUJER') ||
+          rawGender.includes('DAMA')
+        ) {
+          gender = 'F';
+          hasValidGender = true;
+        } else if (
+          rawGender.startsWith('M') ||
+          rawGender.includes('MASC') ||
+          rawGender.includes('VARON') ||
+          rawGender.includes('HOMBRE')
+        ) {
+          gender = 'M';
+          hasValidGender = true;
+        }
+      }
 
       // Fecha y año de nacimiento
       const rawDate = colMap['fec_nac'] !== undefined ? row[colMap['fec_nac']] : '';
-      const { birthDateStr, birthYear } = parseBirthDate(rawDate);
+      const { birthDateStr, birthYear, isValid: hasValidBirthYear } = parseBirthDate(rawDate);
 
       // Club
       let club =
@@ -317,7 +407,12 @@ export function parseExcelRoster(fileBuffer: ArrayBuffer): {
       const rawWeight =
         colMap['peso'] !== undefined ? row[colMap['peso']] : '';
 
-      const normalizedCategory = normalizeJudoCategory(rawCat, gender, rawWeight, birthYear);
+      const catResult = normalizeJudoCategory(
+        rawCat,
+        gender,
+        rawWeight,
+        hasValidBirthYear ? birthYear : undefined
+      );
 
       // Extraer peso numérico
       let parsedWeightNum: number | undefined;
@@ -333,6 +428,21 @@ export function parseExcelRoster(fileBuffer: ArrayBuffer): {
         rut = generateDeterministicRut(fullName, birthYear);
       }
 
+      // Validar si algún dato no puede inferirse con 100% de certeza
+      const reviewReasons: string[] = [];
+      if (!hasValidBirthYear) {
+        reviewReasons.push('Falta fecha de nacimiento');
+      }
+      if (!hasValidGender) {
+        reviewReasons.push('Falta género (M/F)');
+      }
+      if (!catResult.isValid) {
+        reviewReasons.push(catResult.reviewReason || 'Falta peso o categoría reglamentaria');
+      }
+
+      const needsReview = reviewReasons.length > 0;
+      const reviewReason = needsReview ? reviewReasons.join(' • ') : undefined;
+
       athletes.push({
         name: fullName,
         club_name: club,
@@ -340,9 +450,11 @@ export function parseExcelRoster(fileBuffer: ArrayBuffer): {
         gender,
         birth_year: birthYear,
         birth_date: birthDateStr,
-        category: normalizedCategory,
+        category: catResult.category,
         weight: parsedWeightNum,
         grade: grade || undefined,
+        needsReview,
+        reviewReason,
       });
     }
 

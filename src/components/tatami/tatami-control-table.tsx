@@ -171,7 +171,11 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
   // ============================================================================
   // INTEGRACIÓN FASE 4: REALTIME BROADCAST & SYNC ENGINE
   // ============================================================================
-  const channelName = isDemoMode ? 'tatami-demo' : `tatami-${currentMatch.tatami_number}`;
+  const channelName = isDemoMode
+    ? 'tatami-demo'
+    : currentMatch.tournament_id && currentMatch.tournament_id !== 'demo'
+    ? `tatami-${currentMatch.tatami_number}-${currentMatch.tournament_id}`
+    : `tatami-${currentMatch.tatami_number}`;
   const syncResponderRef = useRef<() => void>(() => {});
   const { broadcastState, isSubscribed: isRealtimeConnected } = useRealtimeBroadcast({
     channelName,
@@ -1244,7 +1248,13 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
 
           {/* Botón Abrir TV Realtime */}
           <a
-            href={isDemoMode ? '/scoreboard/demo' : `/scoreboard/tatami-${currentMatch.tatami_number}`}
+            href={
+              isDemoMode
+                ? '/scoreboard/demo'
+                : `/scoreboard/tatami-${currentMatch.tatami_number}${
+                    currentMatch.tournament_id ? `?t=${currentMatch.tournament_id}` : ''
+                  }`
+            }
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center space-x-1.5 text-xs bg-purple-950/90 hover:bg-purple-900 text-purple-300 hover:text-white px-3 py-1 rounded-xl border border-purple-700/60 font-bold transition shadow-sm"
@@ -1360,9 +1370,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         <section className="col-span-5 bg-white text-slate-900 p-6 flex flex-col justify-between border-r-4 border-slate-900">
           <div>
             <div className="flex items-center justify-between pb-2 border-b-2 border-slate-200">
-              <span className="text-xs font-black tracking-widest text-slate-500 uppercase">
-                BLANCO (SHIRO)
-              </span>
+              <span className="w-3 h-3 rounded-full bg-slate-300 inline-block" />
               <span className="text-xs text-slate-400 font-mono">Shift + Key = Deshacer</span>
             </div>
             <h2 className="text-3xl font-black tracking-tight mt-2 text-slate-900 truncate">
@@ -1442,7 +1450,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
                   : 'bg-slate-900 text-white hover:bg-slate-800'
                 }`}
             >
-              OSAEKOMI BLANCO [A]
+              OSAEKOMI [A / ←]
             </button>
           </div>
         </section>
@@ -1766,7 +1774,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
                 onClick={stopOsaekomi}
                 className="flex-1 py-1 text-xs font-bold rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
               >
-                Toketa [S]
+                Toketa [S / ↓]
               </button>
               <button
                 onClick={swapOsaekomi}
@@ -1805,9 +1813,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
         <section className="col-span-5 bg-blue-700 text-white p-6 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-2 border-b-2 border-blue-600">
-              <span className="text-xs font-black tracking-widest text-blue-200 uppercase">
-                AZUL (AO)
-              </span>
+              <span className="w-3 h-3 rounded-full bg-blue-400 inline-block" />
               <span className="text-xs text-blue-300 font-mono">Shift + Key = Deshacer</span>
             </div>
             <h2 className="text-3xl font-black tracking-tight mt-2 text-white truncate">
@@ -1887,7 +1893,7 @@ export function TatamiControlTable({ initialMatch, isDemoMode = false }: TatamiC
                   : 'bg-slate-950 text-white hover:bg-slate-900 border border-blue-500'
                 }`}
             >
-              OSAEKOMI AZUL [L]
+              OSAEKOMI [L / →]
             </button>
           </div>
         </section>

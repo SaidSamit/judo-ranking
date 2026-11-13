@@ -33,6 +33,8 @@ export interface DraftAthletePayload {
   birth_date?: string;
   weight?: number;
   seed?: number;
+  needsReview?: boolean;
+  reviewReason?: string;
 }
 
 export interface ConfirmRegistrationsResult {
@@ -53,6 +55,25 @@ export async function confirmRegistrationsAction(
       count: 0,
       message: 'No hay judokas en el estado borrador para confirmar.',
       error: 'La lista de judokas está vacía.',
+    };
+  }
+
+  // VALIDACIÓN ESTRICTA: Impedir confirmar si existen atletas que requieren revisión
+  const pendingReview = athletes.filter(
+    (a) =>
+      a.needsReview ||
+      !a.category ||
+      a.category.includes('(Falta peso)') ||
+      a.category.includes('(Sin categoría') ||
+      a.category.includes('(Revisión Requerida)')
+  );
+
+  if (pendingReview.length > 0) {
+    return {
+      success: false,
+      count: 0,
+      message: `No se pueden confirmar las inscripciones: Hay ${pendingReview.length} judokas con datos incompletos o sin peso reglamentario en la nómina.`,
+      error: 'Inscripciones incompletas requieren revisión de categoría oficial antes de guardar en la base de datos.',
     };
   }
 
@@ -336,6 +357,28 @@ export async function confirmRegistrationsAction(
     });
     const dedupedRegistrations = Array.from(uniqueRegsMap.values());
 
+    // Consultar inscripciones preexistentes para informar con precisión nuevas vs existentes
+    const { data: existingTourRegs } = await supabase
+      .from('tournament_registrations')
+      .select('athlete_id, category_id')
+      .eq('tournament_id', targetTourId);
+
+    const existingKeySet = new Set(
+      (existingTourRegs || []).map((r) => `${r.athlete_id}:${r.category_id}`)
+    );
+
+    let newlyInsertedCount = 0;
+    let preExistingCount = 0;
+
+    dedupedRegistrations.forEach((reg) => {
+      const k = `${reg.athlete_id}:${reg.category_id}`;
+      if (existingKeySet.has(k)) {
+        preExistingCount++;
+      } else {
+        newlyInsertedCount++;
+      }
+    });
+
     const { error: regError } = await supabase
       .from('tournament_registrations')
       .upsert(dedupedRegistrations, { onConflict: 'tournament_id,athlete_id,category_id' });
@@ -356,10 +399,15 @@ export async function confirmRegistrationsAction(
       }
     }
 
+    const statusMsg =
+      preExistingCount > 0
+        ? `¡Inscripción exitosa! Se procesaron ${dedupedRegistrations.length} judokas (${newlyInsertedCount} nuevos, ${preExistingCount} ratificados/preexistentes) en la base de datos.`
+        : `¡Inscripción exitosa! Se confirmaron y almacenaron ${dedupedRegistrations.length} judokas en la base de datos.`;
+
     return {
       success: true,
       count: dedupedRegistrations.length,
-      message: `¡Inscripción exitosa! Se confirmaron y almacenaron ${dedupedRegistrations.length} judokas en la base de datos.`,
+      message: statusMsg,
     };
   } catch (err: any) {
     console.error('[confirmRegistrationsAction] Error:', err);

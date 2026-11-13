@@ -6,10 +6,13 @@ import { createAdminClient } from '@/lib/supabase/admin';
 
 interface ScoreboardPageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ t?: string; tournament_id?: string }>;
 }
 
-export default async function ScoreboardPage({ params }: ScoreboardPageProps) {
+export default async function ScoreboardPage({ params, searchParams }: ScoreboardPageProps) {
   const { id } = await params;
+  const { t, tournament_id } = await searchParams;
+  const explicitTourId = t || tournament_id;
 
   // 0. Modo Demostración aislado: conectar exclusivamente al canal 'tatami-demo' sin consultar campeonatos reales
   if (id.toLowerCase() === 'demo') {
@@ -44,32 +47,61 @@ export default async function ScoreboardPage({ params }: ScoreboardPageProps) {
       timestamp: Date.now(),
     };
 
-    return <PublicScoreboard initialPayload={demoPayload} channelName="tatami-demo" isDemoMode={true} />;
+    return (
+      <PublicScoreboard
+        initialPayload={demoPayload}
+        channelName="tatami-demo"
+        tatamiNumber={0}
+        isDemoMode={true}
+      />
+    );
   }
 
-  // Extraer número de tatami si el ID es 'tatami-1' o similar, o usar canal directo
+  // Extraer número de tatami si el ID es 'tatami-1' o similar
   const tatamiMatch = id.match(/tatami-(\d+)/i);
   const tatamiNumber = tatamiMatch ? parseInt(tatamiMatch[1], 10) : 1;
-  const channelName = id.includes('tatami-') ? id : `tatami-${tatamiNumber}`;
 
   // Consultar si hay un combate activo o programado en este tatami para precargar nombres reales
   let initialMatchData: any = null;
+  let tournamentName = 'Campeonato Oficial';
+
   try {
     const supabase = createAdminClient();
-    const { data: activeTour } = await supabase
-      .from('tournaments')
-      .select('id')
-      .eq('status', 'ACTIVE')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    let targetTourId = explicitTourId;
 
-    const queueRes = await getTatamiQueueMatchesAction(tatamiNumber, activeTour?.id);
-    if (queueRes.success && queueRes.matches.length > 0) {
-      initialMatchData =
-        queueRes.matches.find((m: any) => m.status === 'ONGOING') ||
-        queueRes.matches.find((m: any) => m.status === 'SCHEDULED') ||
-        queueRes.matches[0];
+    if (targetTourId) {
+      const { data: tour } = await supabase
+        .from('tournaments')
+        .select('id, name')
+        .eq('id', targetTourId)
+        .maybeSingle();
+
+      if (tour) {
+        tournamentName = tour.name;
+      }
+    } else {
+      // Si no se especificó en la URL, tomar el torneo más reciente registrado
+      const { data: recentTour } = await supabase
+        .from('tournaments')
+        .select('id, name')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (recentTour) {
+        targetTourId = recentTour.id;
+        tournamentName = recentTour.name;
+      }
+    }
+
+    if (targetTourId) {
+      const queueRes = await getTatamiQueueMatchesAction(tatamiNumber, targetTourId);
+      if (queueRes.success && queueRes.matches.length > 0) {
+        initialMatchData =
+          queueRes.matches.find((m: any) => m.status === 'ONGOING') ||
+          queueRes.matches.find((m: any) => m.status === 'SCHEDULED') ||
+          queueRes.matches[0];
+      }
     }
   } catch (err) {
     console.warn('[ScoreboardPage] Error precargando combate inicial:', err);
@@ -126,5 +158,17 @@ export default async function ScoreboardPage({ params }: ScoreboardPageProps) {
     timestamp: Date.now(),
   };
 
-  return <PublicScoreboard initialPayload={initialPayload} channelName={channelName} />;
+  const channelName = explicitTourId
+    ? `tatami-${tatamiNumber}-${explicitTourId}`
+    : `tatami-${tatamiNumber}`;
+
+  return (
+    <PublicScoreboard
+      initialPayload={initialPayload}
+      channelName={channelName}
+      tatamiNumber={tatamiNumber}
+      initialTournamentId={explicitTourId}
+      initialTournamentName={tournamentName}
+    />
+  );
 }

@@ -9,6 +9,10 @@
 //    pantallas de 55" a 75" en el gimnasio.
 // 3. Interfaz de Solo Lectura: No admite clics ni atajos que alteren los datos.
 // 4. Modo Pantalla Completa: Botón accesible para maximizar en televisores.
+// 5. Independencia y Sintonía Multi-Torneo:
+//    - Si se abre desde la mesa (?t=UUID), sintoniza automáticamente ese torneo.
+//    - Si se abre en frío en una Smart TV / PC externo (/scoreboard/tatami-1),
+//      recuerda el torneo previo en localStorage o permite ingresar el PIN de 6 dígitos.
 //
 // ==============================================================================
 
@@ -17,36 +21,167 @@
 import React, { useState, useEffect } from 'react';
 import { useRealtimeBroadcast } from '@/hooks/use-realtime-broadcast';
 import { BroadcastMatchPayload } from '@/types/events';
-import { Zap } from 'lucide-react';
+import { Zap, Trophy, KeyRound, Tv, X, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { bindScoreboardTatamiAction } from '@/app/actions/tournaments';
 
 interface PublicScoreboardProps {
   initialPayload: BroadcastMatchPayload;
   channelName: string;
+  tatamiNumber?: number;
+  initialTournamentId?: string;
+  initialTournamentName?: string;
   isDemoMode?: boolean;
 }
 
-export function PublicScoreboard({ initialPayload, channelName, isDemoMode = false }: PublicScoreboardProps) {
+export function PublicScoreboard({
+  initialPayload,
+  channelName,
+  tatamiNumber = 1,
+  initialTournamentId,
+  initialTournamentName,
+  isDemoMode = false,
+}: PublicScoreboardProps) {
   const [matchData, setMatchData] = useState<BroadcastMatchPayload>(initialPayload);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const isDemo = isDemoMode || matchData.tatami_number === 0 || matchData.match_id === 'demo-match';
 
-  // 1. Suscripción en MODO RECEPTOR al canal de Broadcast de Supabase
+  // Manejo de sintonía dinámica por campeonato (aislamiento multi-torneo)
+  const [currentTournamentId, setCurrentTournamentId] = useState<string | null>(initialTournamentId || null);
+  const [currentTournamentName, setCurrentTournamentName] = useState<string>(initialTournamentName || '');
+  const [activeChannel, setActiveChannel] = useState<string>(channelName);
+
+  // Estados del modal de vinculación vía PIN para Smart TVs y PCs independientes
+  const [isBindModalOpen, setIsBindModalOpen] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [isBinding, setIsBinding] = useState(false);
+  const [bindError, setBindError] = useState<string | null>(null);
+  const [bindSuccess, setBindSuccess] = useState<string | null>(null);
+
+  // 1. Sincronización con localStorage para persistir sintonía en Smart TVs
+  useEffect(() => {
+    if (isDemo) return;
+
+    const storageKey = `scoreboard_tatami_${tatamiNumber}_tour`;
+
+    if (initialTournamentId) {
+      // Si la URL vino con ?t=UUID (Flujo A: abierta desde la mesa), memorizar en esta TV
+      try {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            id: initialTournamentId,
+            name: initialTournamentName || 'Campeonato Sintonizado',
+          })
+        );
+      } catch (err) {
+        console.warn('No se pudo guardar en localStorage:', err);
+      }
+    } else {
+      // Si se abrió en frío (Flujo B: Smart TV o PC externo sin parámetro ?t=)
+      try {
+        const saved = localStorage.getItem(storageKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?.id) {
+            setCurrentTournamentId(parsed.id);
+            if (parsed.name) setCurrentTournamentName(parsed.name);
+            setActiveChannel(`tatami-${tatamiNumber}-${parsed.id}`);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Error leyendo localStorage de TV:', err);
+      }
+
+      // Si no hay torneo especificado ni memorizado previamente, invitar a vincular
+      setIsBindModalOpen(true);
+    }
+  }, [tatamiNumber, initialTournamentId, initialTournamentName, isDemo]);
+
+  // 2. Suscripción en MODO RECEPTOR al canal de Broadcast de Supabase (canal aislado dinámico)
   const { connectionStatus, isSubscribed } = useRealtimeBroadcast({
-    channelName,
+    channelName: activeChannel,
     mode: 'RECEIVER',
     onStateReceived: (payload) => {
       setMatchData(payload);
     },
   });
 
-  // 2. Formato mm:ss
+  // 3. Acción para vincular con el PIN de la mesa de control
+  const handleBindWithPin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanPin = pinInput.trim();
+    if (cleanPin.length < 4) {
+      setBindError('Por favor ingresa un PIN válido de al menos 4 dígitos.');
+      return;
+    }
+
+    setIsBinding(true);
+    setBindError(null);
+    setBindSuccess(null);
+
+    try {
+      const res = await bindScoreboardTatamiAction({
+        tatamiNumber,
+        pin: cleanPin,
+      });
+
+      if (res.success && res.tournamentId) {
+        const tourId = res.tournamentId;
+        const tourName = res.tournamentName || 'Campeonato Vinculado';
+
+        setCurrentTournamentId(tourId);
+        setCurrentTournamentName(tourName);
+        setActiveChannel(`tatami-${tatamiNumber}-${tourId}`);
+
+        try {
+          localStorage.setItem(
+            `scoreboard_tatami_${tatamiNumber}_tour`,
+            JSON.stringify({ id: tourId, name: tourName })
+          );
+        } catch (storageErr) {
+          console.warn('Error guardando sintonía en localStorage:', storageErr);
+        }
+
+        setBindSuccess(res.message || 'Sincronización exitosa.');
+        setTimeout(() => {
+          setIsBindModalOpen(false);
+          setPinInput('');
+          setBindSuccess(null);
+        }, 1200);
+      } else {
+        setBindError(res.message || 'PIN incorrecto.');
+      }
+    } catch (err: any) {
+      setBindError('Error al contactar al servidor. Revisa tu conexión de red.');
+    } finally {
+      setIsBinding(false);
+    }
+  };
+
+  // 4. Acción para desvincular o cambiar de campeonato en el televisor
+  const handleUnbind = () => {
+    try {
+      localStorage.removeItem(`scoreboard_tatami_${tatamiNumber}_tour`);
+    } catch (err) {
+      console.warn('Error borrando sintonía de TV:', err);
+    }
+    setCurrentTournamentId(null);
+    setCurrentTournamentName('');
+    setActiveChannel(`tatami-${tatamiNumber}`);
+    setBindError(null);
+    setBindSuccess(null);
+    setPinInput('');
+  };
+
+  // 5. Formato mm:ss
   const formatTime = (totalSeconds: number) => {
     const mins = Math.floor(Math.abs(totalSeconds) / 60);
     const secs = Math.abs(totalSeconds) % 60;
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
-  // 3. Manejo de Pantalla Completa (Fullscreen)
+  // 6. Manejo de Pantalla Completa (Fullscreen)
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((err) => {
@@ -74,32 +209,61 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-white font-sans select-none overflow-hidden relative">
       {/* ==================================================================== */}
-      {/* BARRA SUPERIOR: TATAMI, CATEGORÍA Y ESTADO DE CONEXIÓN */}
+      {/* BARRA SUPERIOR: TATAMI, CATEGORÍA, TORNEO Y ESTADO DE CONEXIÓN */}
       {/* ==================================================================== */}
-      <header className="flex items-center justify-between px-8 py-3 bg-slate-900 border-b-2 border-slate-800">
-        <div className="flex items-center space-x-6">
-          <span className="text-3xl font-black tracking-widest text-amber-400">
-            {isDemo ? 'TATAMI DEMO' : `TATAMI ${matchData.tatami_number}`}
+      <header className="flex items-center justify-between px-6 py-2.5 bg-slate-900 border-b-2 border-slate-800">
+        <div className="flex items-center space-x-4">
+          <span className="text-2xl sm:text-3xl font-black tracking-widest text-amber-400">
+            {isDemo ? 'TATAMI DEMO' : `TATAMI ${matchData.tatami_number || tatamiNumber}`}
           </span>
-          <span className="text-xl font-bold px-4 py-1 rounded-full bg-slate-800 text-slate-200 border border-slate-700">
+          <span className="text-base sm:text-lg font-bold px-3 py-1 rounded-full bg-slate-800 text-slate-200 border border-slate-700">
             {isDemo
               ? 'Mesa de Demostración • Modo Práctica'
               : `${matchData.category_name} • Combate #${matchData.match_number}`}
           </span>
+
+          {/* Sintonía de Campeonato Actual (No aplicable en demo) */}
+          {!isDemo && (
+            <div className="hidden md:flex items-center space-x-2 pl-2">
+              {currentTournamentId ? (
+                <div className="flex items-center space-x-2 bg-slate-950/80 px-3 py-1 rounded-lg border border-slate-800 text-xs text-slate-300">
+                  <Trophy className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                  <span className="font-semibold truncate max-w-[200px]" title={currentTournamentName}>
+                    {currentTournamentName || 'Campeonato Oficial'}
+                  </span>
+                  <button
+                    onClick={() => setIsBindModalOpen(true)}
+                    className="ml-1 text-[11px] text-amber-400/80 hover:text-amber-300 underline font-mono cursor-pointer"
+                    title="Cambiar campeonato o reingresar PIN"
+                  >
+                    Cambiar
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsBindModalOpen(true)}
+                  className="flex items-center space-x-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-lg text-xs font-bold transition"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Sincronizar con PIN</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-3">
           {matchData.is_golden_score && (
-            <span className="inline-flex items-center space-x-1.5 text-lg font-black px-4 py-1 rounded-lg bg-amber-500 text-slate-950 animate-pulse tracking-widest shadow-lg shadow-amber-500/40 border-2 border-amber-300">
-              <Zap className="w-5 h-5 fill-slate-950" />
+            <span className="inline-flex items-center space-x-1.5 text-base font-black px-3.5 py-0.5 rounded-lg bg-amber-500 text-slate-950 animate-pulse tracking-widest shadow-lg shadow-amber-500/40 border-2 border-amber-300">
+              <Zap className="w-4 h-4 fill-slate-950" />
               <span>GOLDEN SCORE</span>
             </span>
           )}
 
           {/* Indicador de conexión Realtime */}
-          <div className="flex items-center space-x-2 text-sm text-slate-400 bg-slate-950 px-3 py-1 rounded-full border border-slate-800">
+          <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-950 px-3 py-1 rounded-full border border-slate-800">
             <span
-              className={`w-3 h-3 rounded-full ${
+              className={`w-2.5 h-2.5 rounded-full ${
                 isSubscribed
                   ? 'bg-emerald-500 animate-pulse'
                   : connectionStatus === 'CONNECTING'
@@ -107,18 +271,105 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
                   : 'bg-red-500'
               }`}
             />
-            <span className="font-mono text-xs uppercase">{connectionStatus}</span>
+            <span className="font-mono text-[11px] uppercase">{connectionStatus}</span>
           </div>
 
           <button
             onClick={toggleFullscreen}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition"
+            className="p-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition"
             title="Pantalla Completa"
           >
             {isFullscreen ? '⤢ Salir' : '⤢ TV Fullscreen'}
           </button>
         </div>
       </header>
+
+      {/* ==================================================================== */}
+      {/* MODAL DE VINCULACIÓN CON PIN (SMART TVS Y PCS INDEPENDIENTES) */}
+      {/* ==================================================================== */}
+      {isBindModalOpen && !isDemo && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border-2 border-amber-500/40 rounded-3xl p-8 max-w-md w-full shadow-2xl relative text-center animate-in fade-in zoom-in-95 duration-200">
+            <button
+              onClick={() => setIsBindModalOpen(false)}
+              className="absolute top-5 right-5 text-slate-400 hover:text-white p-2 rounded-xl bg-slate-800/60"
+              title="Cerrar modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-4 text-amber-400">
+              <Tv className="w-8 h-8" />
+            </div>
+
+            <h2 className="text-2xl font-black text-white tracking-wide">
+              Sincronizar Tatami #{tatamiNumber}
+            </h2>
+            <p className="text-sm text-slate-400 mt-2">
+              Ingresa el PIN de 6 dígitos de la mesa de control de este Tatami para enlazar esta pantalla automáticamente al campeonato oficial.
+            </p>
+
+            <form onSubmit={handleBindWithPin} className="mt-6 space-y-4">
+              <div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={pinInput}
+                  onChange={(e) => setPinInput(e.target.value.replace(/\D/g, ''))}
+                  placeholder="000000"
+                  className="w-full text-center text-4xl font-black font-mono tracking-[0.35em] py-3.5 bg-slate-950 text-amber-400 rounded-2xl border-2 border-slate-700 focus:border-amber-400 focus:outline-none transition placeholder-slate-700"
+                  autoFocus
+                />
+              </div>
+
+              {bindError && (
+                <div className="flex items-center space-x-2 p-3 bg-red-950/70 border border-red-500/40 rounded-xl text-red-200 text-xs text-left">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 text-red-400" />
+                  <span>{bindError}</span>
+                </div>
+              )}
+
+              {bindSuccess && (
+                <div className="flex items-center space-x-2 p-3 bg-emerald-950/70 border border-emerald-500/40 rounded-xl text-emerald-200 text-xs text-left">
+                  <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-400" />
+                  <span>{bindSuccess}</span>
+                </div>
+              )}
+
+              <div className="pt-2 flex flex-col space-y-2">
+                <button
+                  type="submit"
+                  disabled={isBinding || pinInput.length < 4}
+                  className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black rounded-2xl uppercase tracking-wider text-sm transition shadow-lg shadow-amber-500/20 flex items-center justify-center space-x-2 cursor-pointer"
+                >
+                  {isBinding ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>Verificando PIN...</span>
+                    </>
+                  ) : (
+                    <>
+                      <KeyRound className="w-5 h-5" />
+                      <span>Sincronizar Pantalla</span>
+                    </>
+                  )}
+                </button>
+
+                {currentTournamentId && (
+                  <button
+                    type="button"
+                    onClick={handleUnbind}
+                    className="w-full py-2 text-xs font-bold text-slate-400 hover:text-red-400 transition cursor-pointer"
+                  >
+                    Desvincular pantalla (Olvidar campeonato memorizado)
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* ==================================================================== */}
       {/* CINTA DE ALERTA GLOBAL: MODO GOLDEN SCORE (ALTA VISIBILIDAD EN TV) */}
@@ -142,9 +393,7 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
         {/* ================================================================== */}
         <section className="col-span-5 bg-white text-slate-950 p-8 flex flex-col justify-between border-r-4 border-slate-950">
           <div>
-            <span className="text-sm font-black tracking-widest text-slate-500 uppercase block">
-              BLANCO (SHIRO)
-            </span>
+            <span className="w-3.5 h-3.5 rounded-full bg-slate-300 inline-block mb-1 shadow-sm" />
             <h1 className="text-5xl lg:text-6xl font-black tracking-tight text-slate-950 mt-1 truncate">
               {matchData.white_athlete_name}
             </h1>
@@ -289,9 +538,7 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
         {/* ================================================================== */}
         <section className="col-span-5 bg-blue-700 text-white p-8 flex flex-col justify-between">
           <div>
-            <span className="text-sm font-black tracking-widest text-blue-200 uppercase block">
-              AZUL (AO)
-            </span>
+            <span className="w-3.5 h-3.5 rounded-full bg-blue-300 inline-block mb-1 shadow-sm" />
             <h1 className="text-5xl lg:text-6xl font-black tracking-tight text-white mt-1 truncate">
               {matchData.blue_athlete_name}
             </h1>
@@ -358,7 +605,7 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
           <div className="w-full flex items-center justify-between border-b-2 border-slate-800 pb-5 max-w-6xl">
             <div className="flex items-center space-x-4">
               <span className="text-4xl sm:text-5xl font-black text-amber-400 tracking-wider">
-                {isDemo ? 'TATAMI DEMO' : `TATAMI ${matchData.tatami_number}`}
+                {isDemo ? 'TATAMI DEMO' : `TATAMI ${matchData.tatami_number || tatamiNumber}`}
               </span>
               <span className="text-lg sm:text-xl font-bold px-4 py-1.5 rounded-full bg-slate-900 text-slate-300 border border-slate-700">
                 {isDemo
@@ -431,9 +678,6 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
             <div className="flex items-center space-x-4 text-left">
               <span className="w-4 h-4 rounded-full bg-white shadow-md flex-shrink-0" />
               <div>
-                <span className="text-xs uppercase tracking-wider text-slate-400 font-bold block">
-                  Judoka Blanco (Shiro)
-                </span>
                 <span className="text-2xl font-black text-white">
                   {matchData.white_athlete_name || 'Por definir'}
                 </span>
@@ -448,9 +692,6 @@ export function PublicScoreboard({ initialPayload, channelName, isDemoMode = fal
             <div className="flex items-center space-x-4 text-left">
               <span className="w-4 h-4 rounded-full bg-blue-500 shadow-md flex-shrink-0" />
               <div>
-                <span className="text-xs uppercase tracking-wider text-blue-400 font-bold block">
-                  Judoka Azul (Ao)
-                </span>
                 <span className="text-2xl font-black text-white">
                   {matchData.blue_athlete_name || 'Por definir'}
                 </span>

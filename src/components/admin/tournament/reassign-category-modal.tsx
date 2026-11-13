@@ -1,8 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Users, Plus, X } from 'lucide-react';
 import { RegisteredAthleteSummary } from '@/app/actions/registrations';
+import { sortCategories } from '@/lib/rules/judo-categories';
 
 interface ReassignCategoryModalProps {
   athlete: RegisteredAthleteSummary | null;
@@ -25,6 +26,8 @@ export function ReassignCategoryModal({
   onClose,
   onOpenNewCategory,
 }: ReassignCategoryModalProps) {
+  const sortedCategories = useMemo(() => sortCategories(categories), [categories]);
+
   if (!athlete) return null;
 
   return (
@@ -59,13 +62,13 @@ export function ReassignCategoryModal({
             <label className="text-xs font-bold text-slate-300 block mb-1">
               Nueva Categoría de Destino
             </label>
-            {categories.length > 0 ? (
+            {sortedCategories.length > 0 ? (
               <select
                 value={targetCatId}
                 onChange={(e) => onTargetCatIdChange(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
               >
-                {categories.map((c) => (
+                {sortedCategories.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} {c.id === athlete.category_id ? '(Actual)' : `(Tatami #${c.assigned_tatami_number || 1})`}
                   </option>
@@ -134,13 +137,20 @@ export function AdditionalCategoryModal({
 }: AdditionalCategoryModalProps) {
   if (!athlete) return null;
 
-  const excludedIds = new Set(
-    alreadyRegisteredCategoryIds && alreadyRegisteredCategoryIds.length > 0
-      ? alreadyRegisteredCategoryIds
-      : [athlete.category_id]
+  const excludedIds = useMemo(
+    () =>
+      new Set(
+        alreadyRegisteredCategoryIds && alreadyRegisteredCategoryIds.length > 0
+          ? alreadyRegisteredCategoryIds
+          : [athlete.category_id]
+      ),
+    [alreadyRegisteredCategoryIds, athlete.category_id]
   );
 
-  const availableCategories = categories.filter((c) => !excludedIds.has(c.id));
+  const availableCategories = useMemo(
+    () => sortCategories(categories.filter((c) => !excludedIds.has(c.id))),
+    [categories, excludedIds]
+  );
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">

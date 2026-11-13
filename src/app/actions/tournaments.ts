@@ -160,6 +160,8 @@ export async function createTournamentAction(
       station_slug: slug,
       station_name: stationName,
       pin,
+      type: 'TATAMI_TABLE',
+      metadata: {},
       created_at: nowIso,
     });
 
@@ -168,10 +170,59 @@ export async function createTournamentAction(
       organization_id: organizationId,
       name: stationName,
       slug,
-      type: 'TATAMI_TABLE',
+      type: 'TATAMI_TABLE' as const,
       tatami_number: i,
       pin_code: pin,
       pin_hash: pinHash,
+      metadata: {},
+      is_active: true,
+      updated_at: nowIso,
+    });
+  }
+
+  // Generar estaciones de pesaje predeterminadas (Varones, Damas y General)
+  const weighInStationsConfig = [
+    {
+      slug: 'pesaje-varones',
+      name: 'Estación de Pesaje - Varones',
+      metadata: { gender_filter: 'M' },
+    },
+    {
+      slug: 'pesaje-damas',
+      name: 'Estación de Pesaje - Damas',
+      metadata: { gender_filter: 'F' },
+    },
+    {
+      slug: 'pesaje-general',
+      name: 'Estación de Pesaje - General',
+      metadata: {},
+    },
+  ];
+
+  for (const wStation of weighInStationsConfig) {
+    const pin = crypto.randomInt(100000, 1000000).toString();
+    const pinHash = await bcrypt.hash(pin, 10);
+
+    credentialsList.push({
+      tatami_number: null,
+      station_slug: wStation.slug,
+      station_name: wStation.name,
+      pin,
+      type: 'WEIGH_IN',
+      metadata: wStation.metadata,
+      created_at: nowIso,
+    });
+
+    stationUpserts.push({
+      tournament_id: newId,
+      organization_id: organizationId,
+      name: wStation.name,
+      slug: wStation.slug,
+      type: 'WEIGH_IN' as const,
+      tatami_number: null,
+      pin_code: pin,
+      pin_hash: pinHash,
+      metadata: wStation.metadata,
       is_active: true,
       updated_at: nowIso,
     });
@@ -224,14 +275,21 @@ export async function createTournamentAction(
       console.warn('Error insertando torneo en Supabase:', tourError.message);
     }
 
-    // 3. Upsert estaciones físicas vinculadas al nuevo torneo
-    const { error: stationErr } = await supabase.from('stations').upsert(stationUpserts);
+    // 3. Upsert estaciones físicas vinculadas al nuevo torneo (tatamis + pesajes)
+    let { error: stationErr } = await supabase
+      .from('stations')
+      .upsert(stationUpserts, { onConflict: 'tournament_id,slug' });
+
     if (stationErr && stationErr.message.includes('column')) {
-      // Fallback de compatibilidad si la migración de columnas aún no se ha ejecutado en Supabase
-      const legacyUpserts = stationUpserts.map(({ tournament_id, pin_code, ...rest }) => rest);
-      await supabase.from('stations').upsert(legacyUpserts, {
-        onConflict: 'organization_id,slug',
-      });
+      const fallbackUpserts = stationUpserts.map(({ metadata, ...rest }) => rest);
+      const { error: retryErr } = await supabase
+        .from('stations')
+        .upsert(fallbackUpserts, { onConflict: 'tournament_id,slug' });
+      stationErr = retryErr;
+    }
+
+    if (stationErr) {
+      console.warn('Aviso insertando estaciones en Supabase:', stationErr.message);
     }
   } catch (dbErr) {
     console.warn('Operando con respaldo seguro de memoria:', dbErr);
@@ -375,6 +433,114 @@ export async function getActiveTournamentSummaryAction(): Promise<{
   }
 
   return null;
+}
+
+/**
+ * Valida el PIN de un Tatami para vincular un televisor o pantalla independiente (Smart TV)
+ * a su campeonato específico sin requerir que esté marcado como 'ACTIVE'.
+ */
+export async function bindScoreboardTatamiAction(params: {
+  tatamiNumber: number;
+  pin: string;
+}): Promise<{
+  success: boolean;
+  message?: string;
+  tournamentId?: string;
+  tournamentName?: string;
+}> {
+  const { tatamiNumber, pin } = params;
+  const cleanPin = (pin || '').trim();
+
+  if (!cleanPin || cleanPin.length < 4) {
+    return {
+      success: false,
+      message: 'Ingresa un PIN numérico válido (mínimo 4 dígitos).',
+    };
+  }
+
+  try {
+    const supabase = createAdminClient();
+
+    // 1. Buscar en la tabla stations todas las mesas con ese tatami_number
+    const { data: stations, error: stErr } = await supabase
+      .from('stations')
+      .select('id, tournament_id, name, slug, tatami_number, pin_hash, pin_code, is_active')
+      .eq('tatami_number', tatamiNumber)
+      .eq('type', 'TATAMI_TABLE')
+      .eq('is_active', true);
+
+    let matchedTourId: string | null = null;
+
+    if (stations && stations.length > 0) {
+      for (const st of stations) {
+        let isMatch = false;
+        if (st.pin_hash) {
+          try {
+            isMatch = await bcrypt.compare(cleanPin, st.pin_hash);
+          } catch {
+            isMatch = false;
+          }
+          if (!isMatch && st.pin_hash === cleanPin) isMatch = true;
+        }
+        if (!isMatch && st.pin_code && st.pin_code === cleanPin) {
+          isMatch = true;
+        }
+
+        if (isMatch && st.tournament_id) {
+          matchedTourId = st.tournament_id;
+          break;
+        }
+      }
+    }
+
+    // 2. Fallback a tournaments.config si no hubo match directo en stations
+    if (!matchedTourId) {
+      const { data: tours } = await supabase
+        .from('tournaments')
+        .select('id, name, config')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      for (const t of tours || []) {
+        const creds = (t.config as any)?.tatami_credentials || [];
+        const matchCred = creds.find(
+          (c: any) =>
+            c.tatami_number === tatamiNumber &&
+            (c.pin === cleanPin || c.pin_hash === cleanPin)
+        );
+        if (matchCred) {
+          matchedTourId = t.id;
+          break;
+        }
+      }
+    }
+
+    if (matchedTourId) {
+      const { data: tour } = await supabase
+        .from('tournaments')
+        .select('id, name')
+        .eq('id', matchedTourId)
+        .maybeSingle();
+
+      return {
+        success: true,
+        tournamentId: matchedTourId,
+        tournamentName: tour?.name || 'Campeonato Oficial',
+        message: `Televisor vinculado exitosamente a ${tour?.name || 'Campeonato'} - Tatami ${tatamiNumber}.`,
+      };
+    }
+  } catch (err: any) {
+    console.error('[bindScoreboardTatamiAction] Error:', err);
+    return {
+      success: false,
+      message: 'Error verificando el PIN de la mesa en el servidor.',
+    };
+  }
+
+  return {
+    success: false,
+    message: `PIN incorrecto para Tatami #${tatamiNumber}. Consulta la ficha de credenciales del Director.`,
+  };
 }
 
 

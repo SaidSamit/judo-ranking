@@ -1,100 +1,62 @@
 // ==============================================================================
-// VISTA: PANTALLA PRINCIPAL DE INICIO / LOGIN INSTITUCIONAL
+// VISTA: PANTALLA PRINCIPAL DE INICIO / SMART LOGIN UNIFICADO
 // ==============================================================================
 //
 // ARQUITECTURA DE AUTO-ENRUTAMIENTO DINÁMICO:
-// 1. Acceso de Administración (Director de Torneo / Comisión):
-//    - Ingreso clásico con Usuario y Clave.
-//    - Enruta directamente al Menú de Campeonatos (/admin/tournaments).
-//
-// 2. Acceso de Mesa de Tatami (Credencial Única con Auto-Enrutamiento):
-//    - Dos campos clásicos: "Identificador de Estación / Usuario" y "Contraseña / PIN".
-//    - Sin botones estáticos: El sistema detecta dinámicamente a qué tatami
-//      corresponde la credencial y auto-enruta al operador a su tablero (/tatami/[id]).
+// - Un solo formulario limpio para administradores y operadores de estación.
+// - Administradores: Usan su correo electrónico (ej: saidsamitmiranda@judoranking.cl) y clave.
+// - Estaciones: Usan su slug (ej: tatami-1, pesaje-varones, pesaje-damas) y su PIN.
+// - Modo Demo: Identificador "demo" y PIN "1234" enruta a /tatami/demo.
+// - Backend: Realiza Database Fallback automático en /api/auth/login.
 //
 // ==============================================================================
 
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Monitor,
-  Trophy,
   KeyRound,
   ArrowRight,
   AlertCircle,
-  Play,
+  UserCheck,
 } from 'lucide-react';
-import { loginAdminAction, loginTatamiAction } from '@/app/actions/auth';
-import { getActiveTournamentSummaryAction } from '@/app/actions/tournaments';
 
 export default function LoginPage() {
   const router = useRouter();
 
-  // Modo de acceso activo: 'ADMIN' | 'TATAMI'
-  const [authMode, setAuthMode] = useState<'ADMIN' | 'TATAMI'>('ADMIN');
-
-  // Campeonato oficial activo
-  const [activeTour, setActiveTour] = useState<{ id: string; name: string; tatamiCount: number } | null>(null);
-
-  useEffect(() => {
-    getActiveTournamentSummaryAction().then((tour) => {
-      if (tour) setActiveTour(tour);
-    });
-  }, []);
-
-  // Formulario Admin
-  const [adminUsername, setAdminUsername] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
-
-  // Formulario Tatami (Credencial Única con Auto-Enrutamiento)
-  const [stationIdentifier, setStationIdentifier] = useState('');
-  const [tatamiPin, setTatamiPin] = useState('');
+  // Formulario Unificado
+  const [identifier, setIdentifier] = useState('');
+  const [secret, setSecret] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Manejador: Login Admin
-  const handleAdminSubmit = async (e: React.FormEvent) => {
+  // Manejador: Envío unificado al endpoint /api/auth/login
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setLoading(true);
 
     try {
-      const formData = new FormData();
-      formData.set('username', adminUsername);
-      formData.set('password', adminPassword);
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier, secret }),
+      });
 
-      const res = await loginAdminAction(formData);
-      if (res.success && res.redirectTo) {
-        router.push(res.redirectTo);
+      const data = await res.json();
+
+      if (res.ok && data.success && data.redirectTo) {
+        router.push(data.redirectTo);
       } else {
-        setErrorMessage(res.message || 'Credenciales inválidas.');
+        setErrorMessage(
+          data.error || 'Credenciales inválidas. Verifica tu identificador o contraseña.'
+        );
         setLoading(false);
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Error en autenticación.');
-      setLoading(false);
-    }
-  };
-
-  // Manejador: Login Tatami con Auto-Enrutamiento
-  const handleTatamiSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage(null);
-    setLoading(true);
-
-    try {
-      const res = await loginTatamiAction(stationIdentifier, tatamiPin);
-      if (res.success && res.redirectTo) {
-        router.push(res.redirectTo);
-      } else {
-        setErrorMessage(res.message || 'Identificador o PIN incorrecto.');
-        setLoading(false);
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Error al conectar con la estación de arbitraje.');
+      setErrorMessage(err.message || 'Error al conectar con el servidor de autenticación.');
       setLoading(false);
     }
   };
@@ -116,44 +78,8 @@ export default function LoginPage() {
             Acceso al Sistema
           </h1>
           <p className="text-slate-400 text-xs sm:text-sm">
-            Ingresa como Administrador para gestionar campeonatos o como Mesa de Control para
-            arbitrar combates.
+            Ingresa con tu correo de administración o con el identificador de tu estación (mesa o pesaje).
           </p>
-        </div>
-
-        {/* SELECTOR DE PERFIL (TABS) */}
-        <div className="grid grid-cols-2 p-1 bg-slate-900 border border-slate-800 rounded-2xl">
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('ADMIN');
-              setErrorMessage(null);
-            }}
-            className={`py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${
-              authMode === 'ADMIN'
-                ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Trophy className="w-4 h-4" />
-            <span>Comisión & Director</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('TATAMI');
-              setErrorMessage(null);
-            }}
-            className={`py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${
-              authMode === 'TATAMI'
-                ? 'bg-blue-600 text-white shadow-md font-black'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Monitor className="w-4 h-4" />
-            <span>Mesa de Tatami</span>
-          </button>
         </div>
 
         {/* MENSAJE DE ERROR */}
@@ -165,134 +91,54 @@ export default function LoginPage() {
         )}
 
         {/* ===================================================================== */}
-        {/* FORMULARIO: ADMINISTRACIÓN / DIRECTOR                                */}
+        {/* FORMULARIO ÚNICO: SMART LOGIN                                        */}
         {/* ===================================================================== */}
-        {authMode === 'ADMIN' && (
-          <form
-            onSubmit={handleAdminSubmit}
-            className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-7 space-y-4 shadow-2xl backdrop-blur-md"
+        <form
+          onSubmit={handleSubmit}
+          className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-7 space-y-4 shadow-2xl backdrop-blur-md"
+        >
+          {/* CAMPO 1: IDENTIFICADOR DE ESTACIÓN O CORREO */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-slate-300 flex items-center space-x-1.5">
+              <UserCheck className="w-3.5 h-3.5 text-amber-400" />
+              <span>Identificador de Estación o Correo</span>
+            </label>
+            <input
+              type="text"
+              required
+              autoFocus
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              placeholder="ej. tatami-1, pesaje-varones o director@judo.cl"
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white font-medium focus:outline-none focus:border-amber-400 placeholder-slate-500"
+            />
+          </div>
+
+          {/* CAMPO 2: PIN O CONTRASEÑA */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-slate-300 flex items-center space-x-1.5">
+              <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+              <span>PIN o Contraseña</span>
+            </label>
+            <input
+              type="password"
+              required
+              value={secret}
+              onChange={(e) => setSecret(e.target.value)}
+              placeholder="••••••••"
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-amber-400 placeholder-slate-500"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition shadow-lg flex items-center justify-center space-x-2 mt-4"
           >
-            <div className="space-y-1 pb-1">
-              <span className="text-xs font-bold text-amber-400 uppercase tracking-wider block">
-                Sesión de Administración
-              </span>
-              <p className="text-xs text-slate-400">
-                Accede al <strong>Menú de Campeonatos</strong> para gestionar torneos, pesaje,
-                llaves y tatamis.
-              </p>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Usuario / Director</label>
-              <input
-                type="text"
-                required
-                value={adminUsername}
-                onChange={(e) => setAdminUsername(e.target.value)}
-                placeholder="Ingresa tu usuario"
-                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 placeholder-slate-500 font-medium"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center">
-                <label className="text-xs font-bold text-slate-300">Clave Maestra</label>
-              </div>
-              <input
-                type="password"
-                required
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-400 placeholder-slate-500 font-mono"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider transition shadow-lg flex items-center justify-center space-x-2 mt-2"
-            >
-              <span>{loading ? 'Ingresando...' : 'Ingresar al Menú de Campeonatos'}</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </form>
-        )}
-
-        {/* ===================================================================== */}
-        {/* FORMULARIO: MESA DE TATAMI (CREDENCIAL ÚNICA CON AUTO-ENRUTAMIENTO)  */}
-        {/* ===================================================================== */}
-        {authMode === 'TATAMI' && (
-          <form
-            onSubmit={handleTatamiSubmit}
-            className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-7 space-y-4 shadow-2xl backdrop-blur-md"
-          >
-            <div className="space-y-1 pb-1">
-              <span className="text-xs font-bold text-blue-400 uppercase tracking-wider block">
-                Sesión de Mesa de Control
-              </span>
-              <p className="text-xs text-slate-400">
-                Ingresa las credenciales impresas en tu ficha. El sistema auto-enrutará
-                directamente a la mesa correspondiente.
-              </p>
-              {activeTour && (
-                <div className="pt-1">
-                  <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-blue-950/60 border border-blue-800 text-[11px] text-blue-300 font-medium">
-                    <Trophy className="w-3 h-3 text-amber-400 flex-shrink-0" />
-                    <span>Torneo Activo: <strong className="text-white font-bold">{activeTour.name}</strong></span>
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* CAMPO 1: IDENTIFICADOR DE ESTACIÓN / USUARIO */}
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center">
-                <label className="text-xs font-bold text-slate-300">
-                  Identificador de Estación / Usuario
-                </label>
-              </div>
-              <div className="relative">
-                <Monitor className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  required
-                  value={stationIdentifier}
-                  onChange={(e) => setStationIdentifier(e.target.value)}
-                  placeholder="Ej: tatami-1"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-blue-500 placeholder-slate-600 font-medium"
-                />
-              </div>
-            </div>
-
-            {/* CAMPO 2: CONTRASEÑA / PIN */}
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center">
-                <label className="text-xs font-bold text-slate-300">Contraseña / PIN</label>
-              </div>
-              <div className="relative">
-                <KeyRound className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="password"
-                  required
-                  value={tatamiPin}
-                  onChange={(e) => setTatamiPin(e.target.value)}
-                  placeholder="••••"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-base font-mono font-black text-amber-400 tracking-[0.2em] focus:outline-none focus:border-blue-500 placeholder-slate-600"
-                />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs uppercase tracking-wider transition shadow-lg flex items-center justify-center space-x-2 mt-2"
-            >
-              <span>{loading ? 'Verificando Estación...' : 'Ingresar a Mesa de Tatami'}</span>
-              <Play className="w-4 h-4 fill-current" />
-            </button>
-          </form>
-        )}
+            <span>{loading ? 'Verificando...' : 'Ingresar al Sistema'}</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </form>
 
         {/* PIE DE PÁGINA */}
         <div className="text-center text-xs text-slate-500">

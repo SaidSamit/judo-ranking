@@ -185,31 +185,13 @@ export default function TournamentsPage() {
       )}
 
       {/* RESUMEN DE CONTROL GLOBAL */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
             Campeonato Activo
           </span>
           <span className="text-base font-black text-amber-400 truncate block mt-1">
             {activeTour?.name || 'Ninguno'}
-          </span>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-            Tatamis en Operación
-          </span>
-          <span className="text-2xl font-black text-white mt-1 block">
-            {activeTour?.tatami_count || 0}
-          </span>
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4">
-          <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider block">
-            Deportistas Inscritos
-          </span>
-          <span className="text-2xl font-black text-emerald-400 mt-1 block">
-            {activeTour?.athlete_count || 0}
           </span>
         </div>
 

@@ -20,7 +20,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import {
   Trophy,
   Users,
@@ -66,7 +66,12 @@ import {
   TatamiCredential,
 } from '@/app/actions/tournament-builder';
 import { BracketResult } from '@/lib/rules/bracket-engine';
-import { isWeightValidForCategory } from '@/lib/rules/judo-categories';
+import {
+  isWeightValidForCategory,
+  sortCategoryNames,
+  sortCategories,
+  compareJudoCategories,
+} from '@/lib/rules/judo-categories';
 
 // Subcomponentes modulares de cada pestaña
 import { TournamentRosterTab } from './tournament/tournament-roster-tab';
@@ -88,6 +93,8 @@ interface TournamentDashboardViewProps {
 }
 
 export function TournamentDashboardView({ initialTournament }: TournamentDashboardViewProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab');
 
@@ -101,19 +108,32 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     return 'roster';
   });
 
+  // Sincronización reactiva inmediata cuando cambia la pestaña en la URL (ej: clics en Menú Lateral)
+  useEffect(() => {
+    if (!requestedTab || requestedTab === 'roster') {
+      setActiveTab('roster');
+    } else if (requestedTab === 'tatamis' || requestedTab === 'monitor') {
+      setActiveTab('tatamis');
+    } else if (requestedTab === 'weigh_in') {
+      setActiveTab('weigh_in');
+    } else if (requestedTab === 'brackets') {
+      setActiveTab('brackets');
+    } else if (requestedTab === 'credentials') {
+      setActiveTab('credentials');
+    } else if (requestedTab === 'results') {
+      setActiveTab('results');
+    }
+  }, [requestedTab]);
+
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error' | 'info';
     text: string;
   } | null>(null);
 
-  // Manejo de cambio de pestaña con actualización en URL para marcadores
+  // Manejo de cambio de pestaña con actualización en URL
   const handleTabChange = (tab: DashboardTab) => {
     setActiveTab(tab);
-    if (typeof window !== 'undefined') {
-      const url = new URL(window.location.href);
-      url.searchParams.set('tab', tab);
-      window.history.replaceState({}, '', url.toString());
-    }
+    router.replace(`${pathname}?tab=${tab}`, { scroll: false });
   };
 
   // ==========================================================================
@@ -153,7 +173,6 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   // ==========================================================================
   const [credentials, setCredentials] = useState<TatamiCredential[]>([]);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
-  const [copiedAll, setCopiedAll] = useState(false);
 
   // ==========================================================================
   // ESTADOS DE PESTAÑA 6: RESULTADOS Y PODIO
@@ -206,9 +225,10 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     try {
       const res = await getTournamentCategoriesStatusAction(tournament.id);
       if (res.success && res.categories) {
-        setCategories(res.categories);
-        if (!selectedCategoryId && res.categories.length > 0) {
-          setSelectedCategoryId(res.categories[0].id);
+        const sortedCats = sortCategories(res.categories);
+        setCategories(sortedCats);
+        if (!selectedCategoryId && sortedCats.length > 0) {
+          setSelectedCategoryId(sortedCats[0].id);
         }
       }
     } finally {
@@ -246,7 +266,10 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     try {
       const res = await getTournamentPodiumsAction(tournament.id);
       if (res.success && res.results) {
-        setPodiumResults(res.results);
+        const sortedResults = [...res.results].sort((a, b) =>
+          compareJudoCategories({ name: a.categoryName }, { name: b.categoryName })
+        );
+        setPodiumResults(sortedResults);
       }
     } finally {
       setLoadingPodiums(false);
@@ -311,7 +334,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     weighInAthletes.forEach((a) => {
       if (a.category_name) set.add(a.category_name);
     });
-    return Array.from(set).sort();
+    return sortCategoryNames(Array.from(set));
   }, [weighInAthletes]);
 
   // Distribución de carga por tatami
@@ -653,19 +676,29 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   };
 
+  const tatamiSummary = useMemo(() => {
+    const summary: Record<number, { categoriesCount: number; athletesCount: number; categoryNames: string[] }> = {};
+    const tatamiCount = tournament.tatami_count || 1;
+    for (let t = 1; t <= tatamiCount; t++) {
+      summary[t] = { categoriesCount: 0, athletesCount: 0, categoryNames: [] };
+    }
+    categories.forEach((cat) => {
+      const tNum = cat.assigned_tatami_number || 1;
+      if (!summary[tNum]) {
+        summary[tNum] = { categoriesCount: 0, athletesCount: 0, categoryNames: [] };
+      }
+      summary[tNum].categoriesCount++;
+      summary[tNum].categoryNames.push(cat.name);
+      const athCount = registeredAthletes.filter((a) => a.category_id === cat.id).length;
+      summary[tNum].athletesCount += athCount;
+    });
+    return summary;
+  }, [categories, registeredAthletes, tournament.tatami_count]);
+
   const handleCopyPin = (slug: string, pin: string) => {
     navigator.clipboard.writeText(pin);
     setCopiedSlug(slug);
     setTimeout(() => setCopiedSlug(null), 2000);
-  };
-
-  const handleCopyAllPins = () => {
-    const text = credentials
-      .map((c) => `Tatami #${c.tatami_number} (${c.station_name}): PIN ${c.pin}`)
-      .join('\n');
-    navigator.clipboard.writeText(text);
-    setCopiedAll(true);
-    setTimeout(() => setCopiedAll(false), 2000);
   };
 
   const handlePrintCredentials = () => {
@@ -815,7 +848,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   return (
     <div className="space-y-6">
       {/* CABECERA PRINCIPAL DEL CAMPEONATO */}
-      <header className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5">
+      <header className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5 print:hidden">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex items-center space-x-3">
@@ -890,92 +923,12 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           </div>
         </div>
 
-        {/* NAVEGACIÓN POR PESTAÑAS */}
-        <nav className="flex space-x-2 border-t border-slate-800 pt-3 overflow-x-auto">
-          <button
-            type="button"
-            onClick={() => handleTabChange('roster')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
-              activeTab === 'roster'
-                ? 'bg-amber-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>Inscripciones ({uniqueRegisteredAthletesCount})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabChange('weigh_in')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
-              activeTab === 'weigh_in'
-                ? 'bg-amber-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Scale className="w-4 h-4" />
-            <span>Estación de Pesaje</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabChange('brackets')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
-              activeTab === 'brackets'
-                ? 'bg-amber-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Trophy className="w-4 h-4" />
-            <span>Sorteo</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabChange('credentials')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
-              activeTab === 'credentials'
-                ? 'bg-amber-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <KeyRound className="w-4 h-4" />
-            <span>Tatamis y PINs</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabChange('tatamis')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
-              activeTab === 'tatamis'
-                ? 'bg-amber-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Layers className="w-4 h-4" />
-            <span>Monitor Multi-Tatami</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleTabChange('results')}
-            className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 flex-shrink-0 ${
-              activeTab === 'results'
-                ? 'bg-amber-500 text-slate-950 shadow-md'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Trophy className="w-4 h-4 text-amber-400" />
-            <span>Resultados y Podio</span>
-          </button>
-        </nav>
       </header>
 
       {/* FEEDBACK GLOBAL */}
       {feedback && (
         <div
-          className={`p-3.5 rounded-xl border flex items-center justify-between text-xs font-bold ${
+          className={`p-3.5 rounded-xl border flex items-center justify-between text-xs font-bold print:hidden ${
             feedback.type === 'success'
               ? 'bg-emerald-950/60 border-emerald-500 text-emerald-300'
               : feedback.type === 'error'
@@ -1100,10 +1053,9 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
         <TournamentCredentialsTab
           tournamentName={tournament.name}
           credentials={credentials}
+          tatamiSummary={tatamiSummary}
           copiedSlug={copiedSlug}
-          copiedAll={copiedAll}
           onCopyPin={handleCopyPin}
-          onCopyAll={handleCopyAllPins}
           onPrint={handlePrintCredentials}
         />
       )}

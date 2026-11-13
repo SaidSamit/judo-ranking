@@ -4,6 +4,7 @@ import React, { useMemo } from 'react';
 import { Users, RefreshCw, Plus, X } from 'lucide-react';
 import { RosterUpload } from '@/components/admin/roster-upload';
 import { RegisteredAthleteSummary } from '@/app/actions/registrations';
+import { sortCategories } from '@/lib/rules/judo-categories';
 
 interface TournamentRosterTabProps {
   tournament: {
@@ -151,7 +152,7 @@ export function TournamentRosterTab({
                     </td>
                     <td className="p-3">
                       <div className="flex flex-col gap-1">
-                        {registrations.map((reg) => (
+                        {sortCategories(registrations.map((r) => ({ ...r, name: r.category_name }))).map((reg) => (
                           <div
                             key={reg.id}
                             className="inline-flex items-center gap-1.5 self-start px-2.5 py-0.5 rounded-lg bg-blue-950/80 text-blue-300 border border-blue-800/80 text-[11px] font-bold"
@@ -230,6 +231,7 @@ export function TournamentRosterTab({
         <RosterUpload
           tournamentId={tournament.id}
           tournamentCategories={categories}
+          existingRegistrations={registeredAthletes}
           onRegistrationsConfirmed={onRegistrationsConfirmed}
         />
       </div>

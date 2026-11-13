@@ -15,11 +15,13 @@ import {
   Users,
   X,
   ArrowRight,
+  FileDown,
 } from 'lucide-react';
 import { BracketViewer } from '@/components/admin/bracket-viewer';
 import { CategoryBracketStatus } from '@/app/actions/brackets';
 import { RegisteredAthleteSummary } from '@/app/actions/registrations';
 import { BracketResult } from '@/lib/rules/bracket-engine';
+import { sortCategories } from '@/lib/rules/judo-categories';
 
 interface TatamiDistItem {
   tatamiNum: number;
@@ -59,35 +61,6 @@ interface TournamentBracketsTabProps {
   isMutatingCategoryAthlete?: boolean;
 }
 
-function getDivisionSortRank(name: string): number {
-  const lower = name.toLowerCase();
-  if (lower.includes('sub-7') || lower.includes('sub 7')) return 1;
-  if (lower.includes('sub-9') || lower.includes('sub 9')) return 2;
-  if (lower.includes('sub-11') || lower.includes('sub 11')) return 3;
-  if (lower.includes('sub-13') || lower.includes('sub 13')) return 4;
-  if (lower.includes('sub-15') || lower.includes('sub 15')) return 5;
-  if (lower.includes('cadet') || lower.includes('sub-18') || lower.includes('sub 18')) return 6;
-  if (lower.includes('junior') || lower.includes('sub-21') || lower.includes('sub 21')) return 7;
-  if (lower.includes('senior') || lower.includes('adulto')) return 8;
-  if (lower.includes('master')) return 9;
-  if (lower.includes('novicio')) return 10;
-  return 99;
-}
-
-function getGenderSortRank(name: string, gender?: string): number {
-  const lower = name.toLowerCase();
-  if (lower.includes('femenin') || lower.includes('damas') || gender === 'F') return 1;
-  if (lower.includes('masculin') || lower.includes('varon') || gender === 'M') return 2;
-  return 3;
-}
-
-function getWeightSortValue(name: string): number {
-  const match = name.match(/([+-])\s*(\d+(?:\.\d+)?)\s*kg/i);
-  if (!match) return 99999;
-  const val = parseFloat(match[2]);
-  return match[1] === '+' ? 10000 + val : val;
-}
-
 export function TournamentBracketsTab({
   tournament,
   categories,
@@ -120,21 +93,9 @@ export function TournamentBracketsTab({
   const [showAddAthletePanel, setShowAddAthletePanel] = useState(false);
   const [addAthleteSearch, setAddAthleteSearch] = useState('');
 
-  // 1. Ordenar categorías lógicamente según estructura IJF (División -> Género -> Peso numérico)
+  // 1. Ordenar categorías canónicamente según estructura IJF (División -> Género -> Peso numérico)
   const orderedCategories = useMemo(() => {
-    return [...categories].sort((a, b) => {
-      const divDiff = getDivisionSortRank(a.name) - getDivisionSortRank(b.name);
-      if (divDiff !== 0) return divDiff;
-
-      const genDiff =
-        getGenderSortRank(a.name, a.gender) - getGenderSortRank(b.name, b.gender);
-      if (genDiff !== 0) return genDiff;
-
-      const weightDiff = getWeightSortValue(a.name) - getWeightSortValue(b.name);
-      if (weightDiff !== 0) return weightDiff;
-
-      return a.name.localeCompare(b.name);
-    });
+    return sortCategories(categories);
   }, [categories]);
 
   // Contadores de filtros rápidos
@@ -248,44 +209,77 @@ export function TournamentBracketsTab({
     setAddAthleteSearch('');
   };
 
+  const weighedCategories = useMemo(() => {
+    return orderedCategories.filter(
+      (c) => c.passed_weigh_in >= 1 || c.matches_generated
+    );
+  }, [orderedCategories]);
+
+  const totalWeighedAthletes = useMemo(() => {
+    return (registeredAthletes || []).filter(
+      (a) => a.weigh_in_status === 'PASSED' || a.actual_weight !== null
+    ).length;
+  }, [registeredAthletes]);
+
+  const handleExportWeighedPdf = () => {
+    window.print();
+  };
+
   return (
     <div className="space-y-5">
-      {/* CABECERA GLOBAL DE SORTEO Y BALANCEO DE TATAMIS */}
-      <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-3">
-          <div>
-            <h2 className="text-lg font-black text-white flex items-center space-x-2">
-              <Trophy className="w-5 h-5 text-amber-400" />
-              <span>Sorteo - {tournament.name}</span>
-              <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-full border border-slate-800">
-                {filterCounts.generated}/{filterCounts.all} sorteadas
-              </span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Busca y selecciona una categoría en el panel izquierdo para gestionar competidores, asignar tatami o generar su llave.
-            </p>
-          </div>
+      {/* SECCIÓN INTERACTIVA DE PANTALLA (OCULTA AL IMPRIMIR) */}
+      <div className="space-y-5 print:hidden">
+        {/* CABECERA GLOBAL DE SORTEO Y BALANCEO DE TATAMIS */}
+        <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-3">
+            <div>
+              <h2 className="text-lg font-black text-white flex items-center space-x-2">
+                <Trophy className="w-5 h-5 text-amber-400" />
+                <span>Sorteo - {tournament.name}</span>
+                <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2.5 py-0.5 rounded-full border border-slate-800">
+                  {filterCounts.generated}/{filterCounts.all} sorteadas
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Busca y selecciona una categoría en el panel izquierdo para gestionar competidores, asignar tatami o generar su llave.
+              </p>
+            </div>
 
-          <div className="flex items-center space-x-2 flex-shrink-0">
-            <button
-              type="button"
-              onClick={onOpenNewCategoryModal}
-              className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow"
-            >
-              <Plus className="w-3.5 h-3.5 stroke-[3]" />
-              <span>Nueva Categoría</span>
-            </button>
-            <button
-              type="button"
-              onClick={onRefreshBrackets}
-              disabled={loadingBrackets}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition flex items-center space-x-1 border border-slate-700"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingBrackets ? 'animate-spin' : ''}`} />
-              <span>Actualizar</span>
-            </button>
+            <div className="flex items-center space-x-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={handleExportWeighedPdf}
+                disabled={weighedCategories.length === 0}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 border shadow ${
+                  weighedCategories.length > 0
+                    ? 'bg-slate-800 hover:bg-slate-700 text-amber-400 border-amber-500/40 hover:border-amber-400'
+                    : 'bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed opacity-60'
+                }`}
+                title="Exportar a PDF todas las categorías con judokas pesados"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                <span>Exportar PDF ({weighedCategories.length} Pesadas)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onOpenNewCategoryModal}
+                className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow"
+              >
+                <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                <span>Nueva Categoría</span>
+              </button>
+              <button
+                type="button"
+                onClick={onRefreshBrackets}
+                disabled={loadingBrackets}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition flex items-center space-x-1 border border-slate-700"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingBrackets ? 'animate-spin' : ''}`} />
+                <span>Actualizar</span>
+              </button>
+            </div>
           </div>
-        </div>
 
         {/* BALANCEO DE CARGA POR TATAMI */}
         {tatamiDistribution.length > 0 && (
@@ -685,14 +679,6 @@ export function TournamentBracketsTab({
                           : 'Generar Llave'}
                       </span>
                     </button>
-
-                    <Link
-                      href={`/admin/tatami/${activeCategory.assigned_tatami_number}`}
-                      className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition flex items-center space-x-1"
-                    >
-                      <span>Ir a Cola Tatami {activeCategory.assigned_tatami_number}</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    </Link>
                   </div>
                 </div>
 
@@ -885,6 +871,138 @@ export function TournamentBracketsTab({
           </div>
         </div>
       )}
+      </div>
+
+      {/* ==================================================================== */}
+      {/* 2. DOCUMENTO OFICIAL DE CATEGORÍAS PESADAS (SOLO VISIBLE EN PDF)     */}
+      {/* ==================================================================== */}
+      <div className="hidden print:block text-slate-950 bg-white p-6 space-y-6">
+        {/* CABECERA OFICIAL */}
+        <div className="border-b-2 border-slate-950 pb-4 flex justify-between items-end">
+          <div>
+            <h1 className="text-2xl font-black uppercase tracking-wider">{tournament.name}</h1>
+            <h2 className="text-sm font-bold text-slate-700">
+              Planilla Oficial de Categorías Pesadas y Sorteo de Llaves
+            </h2>
+          </div>
+          <div className="text-right text-xs font-mono text-slate-600">
+            <p>Fecha de emisión: {new Date().toLocaleDateString('es-CL')}</p>
+            <p>{weighedCategories.length} categorías con pesaje • {totalWeighedAthletes} judokas pesados</p>
+          </div>
+        </div>
+
+        {/* RESUMEN DE DISTRIBUCIÓN POR TATAMI */}
+        {tatamiDistribution.length > 0 && (
+          <div className="p-3 border border-slate-400 rounded-xl bg-slate-50 flex flex-wrap items-center justify-between text-xs font-mono">
+            <span><strong>Total Categorías Pesadas:</strong> {weighedCategories.length}</span>
+            <span><strong>Total Judokas Aprobados:</strong> {totalWeighedAthletes}</span>
+            <div className="flex items-center space-x-3">
+              {tatamiDistribution.map((t) => (
+                <span key={t.tatamiNum}>
+                  Tatami #{t.tatamiNum}: <strong>{t.categoriesCount} cat.</strong> ({t.athletesCount} judokas)
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* LISTADO DE CATEGORÍAS PESADAS */}
+        <div className="space-y-6">
+          {weighedCategories.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 italic text-sm">
+              No hay categorías con judokas pesados en este momento.
+            </div>
+          ) : (
+            weighedCategories.map((cat, idx) => {
+              const athletes = (registeredAthletes || []).filter(
+                (a) => a.category_id === cat.id && (a.weigh_in_status === 'PASSED' || a.actual_weight !== null)
+              );
+
+              return (
+                <div
+                  key={cat.id}
+                  className="border-2 border-slate-700 rounded-xl p-4 space-y-3 break-inside-avoid page-break-inside-avoid shadow-sm"
+                >
+                  <div className="flex justify-between items-center border-b border-slate-300 pb-2">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Categoría #{idx + 1}
+                      </span>
+                      <h3 className="text-base font-black text-slate-950">{cat.name}</h3>
+                    </div>
+                    <div className="text-right text-xs font-mono">
+                      <span className="bg-slate-200 border border-slate-400 px-2.5 py-0.5 rounded font-black text-slate-900">
+                        Tatami #{cat.assigned_tatami_number}
+                      </span>
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        {Math.round((cat.match_duration_seconds || 240) / 60)} min • {athletes.length} atleta{athletes.length === 1 ? '' : 's'} pesado{athletes.length === 1 ? '' : 's'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* TABLA DE JUDOKAS PESADOS */}
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-300 text-slate-600 font-bold">
+                        <th className="py-1 px-2 w-8">#</th>
+                        <th className="py-1 px-2">Nombre del Judoka</th>
+                        <th className="py-1 px-2">Club / Asociación</th>
+                        <th className="py-1 px-2 w-24 text-center">Peso Exacto</th>
+                        <th className="py-1 px-2 w-24 text-center">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 font-mono">
+                      {athletes.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-2.5 text-center text-slate-400 italic">
+                            Sin atletas pesados registrados
+                          </td>
+                        </tr>
+                      ) : (
+                        athletes.map((ath, aIdx) => (
+                          <tr key={ath.id}>
+                            <td className="py-1.5 px-2 font-bold text-slate-500">{aIdx + 1}</td>
+                            <td className="py-1.5 px-2 font-black text-slate-900 font-sans">{ath.name}</td>
+                            <td className="py-1.5 px-2 text-slate-700 font-sans">{ath.club_name || '-'}</td>
+                            <td className="py-1.5 px-2 text-center font-bold">
+                              {ath.actual_weight !== null ? `${ath.actual_weight} kg` : '-'}
+                            </td>
+                            <td className="py-1.5 px-2 text-center">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                Aprobado
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+
+                  {/* ESTADO DE LA LLAVE */}
+                  <div className="pt-1 border-t border-slate-200 flex justify-between items-center text-[11px] text-slate-500 font-mono">
+                    <span>
+                      Estado de Llave:{' '}
+                      <strong className={cat.matches_generated ? 'text-emerald-700 font-bold' : 'text-amber-700 font-bold'}>
+                        {cat.matches_generated ? 'Sorteada / Generada' : 'Pendiente de Sorteo'}
+                      </strong>
+                    </span>
+                    <span>
+                      Sistema:{' '}
+                      {cat.passed_weigh_in === 1
+                        ? 'Campeón Directo'
+                        : cat.passed_weigh_in === 2
+                        ? 'Mejor de 3'
+                        : cat.passed_weigh_in <= 5
+                        ? 'Round Robin'
+                        : 'Eliminatoria Doble Bronce'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
     </div>
   );
 }

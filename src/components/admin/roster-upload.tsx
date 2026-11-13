@@ -35,13 +35,18 @@ import {
   Layers,
   ChevronDown,
 } from 'lucide-react';
-import { confirmRegistrationsAction, DraftAthletePayload } from '@/app/actions/registrations';
+import {
+  confirmRegistrationsAction,
+  DraftAthletePayload,
+  RegisteredAthleteSummary,
+} from '@/app/actions/registrations';
 import {
   getDivisionByBirthYear,
   getAvailableCategoriesForAthlete,
   getAllPossibleCategories,
+  sortCategories,
 } from '@/lib/rules/judo-categories';
-import { parseExcelRoster } from '@/lib/utils/excel-roster-parser';
+import { parseExcelRoster, normalizeJudoCategory } from '@/lib/utils/excel-roster-parser';
 
 export interface DraftAthlete {
   id: string; // ID local temporal
@@ -52,6 +57,8 @@ export interface DraftAthlete {
   gender: 'M' | 'F';
   category: string; // Seleccionada del dropdown
   seed?: number;
+  needsReview?: boolean;
+  reviewReason?: string;
 }
 
 /**
@@ -101,6 +108,7 @@ interface RosterUploadProps {
   organizationId?: string;
   tournamentId?: string;
   tournamentCategories?: { id: string; name: string; gender?: string; age_group?: string }[];
+  existingRegistrations?: RegisteredAthleteSummary[];
   onRegistrationsConfirmed?: (count: number) => void;
 }
 
@@ -159,6 +167,7 @@ export function RosterUpload({
   organizationId = 'a0000000-0000-0000-0000-000000000001',
   tournamentId = 'e0000000-0000-0000-0000-000000000001',
   tournamentCategories = [],
+  existingRegistrations = [],
   onRegistrationsConfirmed,
 }: RosterUploadProps) {
   const currentYear = new Date().getFullYear();
@@ -202,12 +211,13 @@ export function RosterUpload({
 
   // Filtrar categorías del torneo para mostrar solo las que el judoka puede inscribirse
   const eligibleTournamentCategories = useMemo(() => {
-    return getEligibleTournamentCategoriesForAthlete(
+    const list = getEligibleTournamentCategoriesForAthlete(
       tournamentCategories,
       typeof formBirthYear === 'number' ? formBirthYear : undefined,
       formGender,
       currentYear
     );
+    return sortCategories(list);
   }, [tournamentCategories, formBirthYear, formGender, currentYear]);
 
   // Sincronizar automáticamente la categoría seleccionada cuando cambian las opciones disponibles
@@ -231,6 +241,110 @@ export function RosterUpload({
     eligibleTournamentCategories,
     formCategory,
   ]);
+
+  // ============================================================================
+  // NORMALIZACIÓN Y DEDUPLICACIÓN INTELIGENTE DE INSCRIPCIONES
+  // ============================================================================
+  const normalizeRutKey = (rut: string) => (rut || '').replace(/[.\-\s]/g, '').toUpperCase();
+  const buildRegistrationKey = (rut: string, category: string) =>
+    `${normalizeRutKey(rut)}::${(category || '').trim().toLowerCase()}`;
+
+  /**
+   * Procesa y deduplica candidatos importados (Excel o CSV) contra:
+   * 1. Duplicados dentro del propio archivo
+   * 2. Duplicados contra el borrador actual (draftAthletes)
+   * 3. Duplicados contra inscripciones ya confirmadas en este campeonato (existingRegistrations)
+   */
+  const processImportedCandidates = (
+    candidates: Omit<DraftAthlete, 'id'>[],
+    sourceFileName: string,
+    prefix: 'excel' | 'csv'
+  ) => {
+    // Claves ya confirmadas en el campeonato
+    const confirmedKeys = new Set<string>();
+    existingRegistrations.forEach((reg) => {
+      confirmedKeys.add(buildRegistrationKey(reg.rut_dni, reg.category_name));
+    });
+
+    // Claves ya existentes en el borrador actual
+    const currentDraftKeys = new Set<string>();
+    draftAthletes.forEach((a) => {
+      currentDraftKeys.add(buildRegistrationKey(a.rut_dni, a.category));
+    });
+
+    const newAthletes: DraftAthlete[] = [];
+    let skippedDraftDupe = 0;
+    let skippedConfirmedDupe = 0;
+    let skippedInternalDupe = 0;
+
+    const seenInBatch = new Set<string>();
+
+    candidates.forEach((cand, idx) => {
+      const key = buildRegistrationKey(cand.rut_dni, cand.category);
+
+      // A. Omitir duplicado dentro del mismo archivo
+      if (seenInBatch.has(key)) {
+        skippedInternalDupe++;
+        return;
+      }
+      seenInBatch.add(key);
+
+      // B. Omitir si ya está confirmado en la base de datos de este torneo
+      if (confirmedKeys.has(key)) {
+        skippedConfirmedDupe++;
+        return;
+      }
+
+      // C. Omitir si ya está presente en el borrador actual
+      if (currentDraftKeys.has(key)) {
+        skippedDraftDupe++;
+        return;
+      }
+
+      // Válido y nuevo
+      newAthletes.push({
+        ...cand,
+        id: `${prefix}-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      });
+    });
+
+    const totalSkipped = skippedDraftDupe + skippedConfirmedDupe + skippedInternalDupe;
+
+    if (newAthletes.length > 0) {
+      setDraftAthletes((prev) => [...newAthletes, ...prev]);
+
+      const needsReviewCount = newAthletes.filter((a) => a.needsReview).length;
+      const readyCount = newAthletes.length - needsReviewCount;
+
+      if (needsReviewCount > 0) {
+        setFeedbackMessage({
+          type: 'info',
+          text: `Se importaron ${newAthletes.length} judokas desde "${sourceFileName}" (${readyCount} listos, ⚠️ ${needsReviewCount} requieren revisión de categoría o peso).`,
+        });
+      } else if (totalSkipped === 0) {
+        setFeedbackMessage({
+          type: 'success',
+          text: `¡Éxito! Se importaron ${newAthletes.length} inscripciones desde "${sourceFileName}".`,
+        });
+      } else {
+        const details = [];
+        if (skippedDraftDupe > 0) details.push(`${skippedDraftDupe} ya en borrador`);
+        if (skippedConfirmedDupe > 0) details.push(`${skippedConfirmedDupe} ya confirmados en torneo`);
+        if (skippedInternalDupe > 0) details.push(`${skippedInternalDupe} repetidos en archivo`);
+
+        setFeedbackMessage({
+          type: 'info',
+          text: `Se agregaron ${newAthletes.length} inscripciones nuevas desde "${sourceFileName}". Se omitieron ${totalSkipped} duplicados (${details.join(', ')}).`,
+        });
+      }
+      setShowCsvDropzone(false);
+    } else {
+      setFeedbackMessage({
+        type: 'error',
+        text: `Aviso: No se agregaron nuevos registros desde "${sourceFileName}". Las ${candidates.length} inscripciones ya se encuentran en el borrador o ya están confirmadas en este campeonato.`,
+      });
+    }
+  };
 
   // ============================================================================
   // ACCIÓN 1: AGREGAR ATLETA MANUALMENTE AL BORRADOR
@@ -298,27 +412,40 @@ export function RosterUpload({
       return;
     }
 
-    // Verificar si el judoka ya existe en la MISMA categoría en el borrador
+    const manualKey = buildRegistrationKey(cleanRut, cleanCategory);
+
+    // 5. Verificar si el judoka ya existe en la MISMA categoría en el borrador actual
     const alreadyInSameCategory = draftAthletes.some(
-      (a) =>
-        a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase() ===
-          cleanRut.replace(/[.\-\s]/g, '').toUpperCase() &&
-        a.category.trim().toLowerCase() === cleanCategory.trim().toLowerCase()
+      (a) => buildRegistrationKey(a.rut_dni, a.category) === manualKey
     );
 
     if (alreadyInSameCategory) {
       setFeedbackMessage({
         type: 'error',
-        text: `El judoka con RUT "${cleanRut}" ya está inscrito en la categoría "${cleanCategory}" en el borrador.`,
+        text: `El judoka con RUT "${cleanRut}" ya está en la nómina en borrador en la categoría "${cleanCategory}".`,
+      });
+      rutInputRef.current?.focus();
+      return;
+    }
+
+    // 6. Verificar si el judoka ya está confirmado en la base de datos de este torneo en la MISMA categoría
+    const alreadyConfirmed = existingRegistrations.some(
+      (reg) => buildRegistrationKey(reg.rut_dni, reg.category_name) === manualKey
+    );
+
+    if (alreadyConfirmed) {
+      setFeedbackMessage({
+        type: 'error',
+        text: `El judoka con RUT "${cleanRut}" ya está INSCRITO Y CONFIRMADO en la categoría "${cleanCategory}" en este campeonato.`,
       });
       rutInputRef.current?.focus();
       return;
     }
 
     const isAdditionalCategory = draftAthletes.some(
-      (a) =>
-        a.rut_dni.replace(/[.\-\s]/g, '').toUpperCase() ===
-        cleanRut.replace(/[.\-\s]/g, '').toUpperCase()
+      (a) => normalizeRutKey(a.rut_dni) === normalizeRutKey(cleanRut)
+    ) || existingRegistrations.some(
+      (reg) => normalizeRutKey(reg.rut_dni) === normalizeRutKey(cleanRut)
     );
 
     const cleanClub = formClub.trim() || 'Independiente';
@@ -349,7 +476,7 @@ export function RosterUpload({
   };
 
   // ============================================================================
-  // ACCIÓN 2: IMPORTAR PLANILLA EXCEL (.xlsx/.xls) O CSV MASIVAMENTE
+  // ACCIÓN 2: IMPORTAR PLANILLA EXCEL (.xlsx/.xls) O CSV MASIVAMENTE (CON DEDUPLICACIÓN)
   // ============================================================================
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -374,22 +501,18 @@ export function RosterUpload({
           return;
         }
 
-        const imported: DraftAthlete[] = parseResult.athletes.map((p, idx) => ({
-          id: `excel-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        const candidates: Omit<DraftAthlete, 'id'>[] = parseResult.athletes.map((p) => ({
           rut_dni: p.rut_dni,
           name: p.name,
           club_name: p.club_name,
           birth_year: p.birth_year,
           gender: p.gender,
           category: p.category,
+          needsReview: p.needsReview,
+          reviewReason: p.reviewReason,
         }));
 
-        setDraftAthletes((prev) => [...imported, ...prev]);
-        setFeedbackMessage({
-          type: 'success',
-          text: `¡Éxito! Se importaron ${imported.length} inscripciones desde "${file.name}" (incluyendo categorías adicionales).`,
-        });
-        setShowCsvDropzone(false);
+        processImportedCandidates(candidates, file.name, 'excel');
       } catch (err: any) {
         setFeedbackMessage({
           type: 'error',
@@ -406,7 +529,7 @@ export function RosterUpload({
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
-        const imported: DraftAthlete[] = [];
+        const candidates: Omit<DraftAthlete, 'id'>[] = [];
 
         results.data.forEach((row, idx) => {
           const rawRut = (
@@ -424,43 +547,75 @@ export function RosterUpload({
 
           const club = (row.club || row.equipo || row.club_name || 'Independiente').trim();
 
-          const rawGender = (row.genero || row.sexo || row.gender || 'M').toString().toUpperCase();
-          const gender: 'M' | 'F' = rawGender.startsWith('F') ? 'F' : 'M';
+          const rawGender = (row.genero || row.sexo || row.gender || '').toString().trim().toUpperCase();
+          let gender: 'M' | 'F' = 'M';
+          let hasValidGender = false;
+          if (
+            rawGender.startsWith('F') ||
+            rawGender.includes('FEM') ||
+            rawGender.includes('MUJER') ||
+            rawGender.includes('DAMA')
+          ) {
+            gender = 'F';
+            hasValidGender = true;
+          } else if (
+            rawGender.startsWith('M') ||
+            rawGender.includes('MASC') ||
+            rawGender.includes('VARON') ||
+            rawGender.includes('HOMBRE')
+          ) {
+            gender = 'M';
+            hasValidGender = true;
+          }
 
           // Año de nacimiento
-          let birthYear = parseInt(
-            row.ano || row.anio || row.año || row.birth_year || row.ano_nacimiento || '',
-            10
-          );
+          const rawYearStr =
+            row.ano || row.anio || row.año || row.birth_year || row.ano_nacimiento || '';
+          let birthYear = parseInt(String(rawYearStr).trim(), 10);
+          let hasValidBirthYear = true;
           if (isNaN(birthYear) || birthYear < 1940 || birthYear > currentYear) {
-            birthYear = 2008; // Valor por defecto en CSV si viene ausente
+            birthYear = 2008;
+            hasValidBirthYear = false;
           }
 
-          // Categoría (si no viene o no coincide, calcular por edad y sexo)
-          let category = (row.categoria || row.category || row.division || '').trim();
-          if (!category) {
-            const computed = getAvailableCategoriesForAthlete(birthYear, gender, currentYear);
-            category = computed.categories[0] || 'Senior Masculino -60kg';
+          // Categoría y peso
+          const rawCat = (row.categoria || row.category || row.division || '').trim();
+          const rawWeight = row.peso || row.weight || '';
+          const catNorm = normalizeJudoCategory(
+            rawCat,
+            gender,
+            rawWeight,
+            hasValidBirthYear ? birthYear : undefined
+          );
+
+          const reviewReasons: string[] = [];
+          if (!hasValidBirthYear) {
+            reviewReasons.push('Falta año de nacimiento');
+          }
+          if (!hasValidGender) {
+            reviewReasons.push('Falta género (M/F)');
+          }
+          if (!catNorm.isValid) {
+            reviewReasons.push(catNorm.reviewReason || 'Falta peso reglamentario');
           }
 
-          imported.push({
-            id: `csv-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+          const needsReview = reviewReasons.length > 0;
+          const reviewReason = needsReview ? reviewReasons.join(' • ') : undefined;
+
+          candidates.push({
             rut_dni: rawRut,
             name: fullName,
             club_name: club,
             birth_year: birthYear,
             gender,
-            category,
+            category: catNorm.category,
+            needsReview,
+            reviewReason,
           });
         });
 
-        if (imported.length > 0) {
-          setDraftAthletes((prev) => [...imported, ...prev]);
-          setFeedbackMessage({
-            type: 'success',
-            text: `Se importaron ${imported.length} judokas del CSV y se agregaron a la tabla borrador.`,
-          });
-          setShowCsvDropzone(false);
+        if (candidates.length > 0) {
+          processImportedCandidates(candidates, file.name, 'csv');
         } else {
           setFeedbackMessage({
             type: 'error',
@@ -507,8 +662,24 @@ export function RosterUpload({
       return;
     }
 
+    // Al editar la fila y seleccionar una categoría oficial válida, se resuelve la revisión
+    const isCategoryResolved = Boolean(
+      editForm.category &&
+      !editForm.category.includes('(Falta peso)') &&
+      !editForm.category.includes('(Sin categoría') &&
+      !editForm.category.includes('(Revisión Requerida)')
+    );
+
     setDraftAthletes((prev) =>
-      prev.map((a) => (a.id === editForm.id ? { ...editForm } : a))
+      prev.map((a) =>
+        a.id === editForm.id
+          ? {
+              ...editForm,
+              needsReview: !isCategoryResolved,
+              reviewReason: isCategoryResolved ? undefined : editForm.reviewReason,
+            }
+          : a
+      )
     );
     setEditingId(null);
     setEditForm(null);
@@ -532,6 +703,16 @@ export function RosterUpload({
   const handleConfirmRegistrations = async () => {
     if (draftAthletes.length === 0) return;
 
+    // Validación estricta: bloquear confirmación si existen judokas con datos incompletos
+    const pendingReviewAthletes = draftAthletes.filter((a) => a.needsReview);
+    if (pendingReviewAthletes.length > 0) {
+      setFeedbackMessage({
+        type: 'error',
+        text: `⚠️ No se pueden confirmar las inscripciones: Hay ${pendingReviewAthletes.length} judoka(s) con datos incompletos en el borrador (ej: falta peso o categoría). Haz clic en el botón de editar (✏️) en la fila para asignarle su categoría reglamentaria antes de confirmar.`,
+      });
+      return;
+    }
+
     setIsSubmitting(true);
     setFeedbackMessage({ type: 'info', text: 'Guardando nómina en Supabase...' });
 
@@ -550,10 +731,18 @@ export function RosterUpload({
       const res = await confirmRegistrationsAction(payload, organizationId, tournamentId);
 
       if (res.success) {
+        // 1. Vaciar inmediatamente la nómina en borrador en memoria local
+        setDraftAthletes([]);
+        setEditingId(null);
+        setEditForm(null);
+
+        // 2. Feedback de éxito al usuario
         setFeedbackMessage({
           type: 'success',
           text: res.message || `¡Éxito! Se confirmaron ${res.count} inscripciones en la base de datos.`,
         });
+
+        // 3. Notificar al contenedor padre para refrescar la lista oficial de confirmados
         if (onRegistrationsConfirmed) {
           onRegistrationsConfirmed(res.count);
         }
@@ -581,7 +770,7 @@ export function RosterUpload({
       map.set(cat, (map.get(cat) || 0) + 1);
     });
 
-    return Array.from(map.entries()).map(([name, count]) => {
+    const list = Array.from(map.entries()).map(([name, count]) => {
       let bracketType: CategorySummary['bracketType'] = 'SINGLE_ELIMINATION';
       let bracketTypeLabel = 'Eliminación Simple';
 
@@ -601,6 +790,8 @@ export function RosterUpload({
 
       return { name, count, bracketType, bracketTypeLabel };
     });
+
+    return sortCategories(list);
   }, [draftAthletes]);
 
   // Contabilizar apariciones de RUT para detectar inscripciones en múltiples categorías
@@ -898,6 +1089,14 @@ export function RosterUpload({
                 {draftAthletes.length} judokas
               </span>
             </span>
+            {draftAthletes.some((a) => a.needsReview) && (
+              <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full font-bold flex items-center space-x-1">
+                <AlertCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                <span>
+                  {draftAthletes.filter((a) => a.needsReview).length} requieren revisión
+                </span>
+              </span>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
@@ -922,6 +1121,8 @@ export function RosterUpload({
                   ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
                   : isSubmitting
                   ? 'bg-blue-600 text-white animate-pulse'
+                  : draftAthletes.some((a) => a.needsReview)
+                  ? 'bg-amber-600 hover:bg-amber-500 text-slate-950 ring-2 ring-amber-400'
                   : 'bg-emerald-600 hover:bg-emerald-500 text-white'
               }`}
             >
@@ -929,6 +1130,8 @@ export function RosterUpload({
               <span>
                 {isSubmitting
                   ? 'Confirmando en BD...'
+                  : draftAthletes.some((a) => a.needsReview)
+                  ? `Revisión Pendiente (${draftAthletes.filter((a) => a.needsReview).length})`
                   : `Confirmar Inscripciones (${draftAthletes.length})`}
               </span>
             </button>
@@ -1115,9 +1318,17 @@ export function RosterUpload({
 
                   // FILA EN MODO LECTURA NORMAL
                   const age = currentYear - athlete.birth_year;
+                  const hasReview = Boolean(athlete.needsReview);
 
                   return (
-                    <tr key={athlete.id} className="hover:bg-slate-800/40 transition">
+                    <tr
+                      key={athlete.id}
+                      className={`transition ${
+                        hasReview
+                          ? 'bg-amber-950/20 border-l-4 border-l-amber-500 hover:bg-amber-950/30'
+                          : 'hover:bg-slate-800/40'
+                      }`}
+                    >
                       <td className="px-4 py-3 font-mono text-slate-500">{idx + 1}</td>
                       <td className="px-4 py-3 font-mono font-bold text-slate-200">
                         {athlete.rut_dni}
@@ -1140,7 +1351,18 @@ export function RosterUpload({
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-200">
                         <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
-                          <span>{athlete.category}</span>
+                          <span className={hasReview ? 'text-amber-300 font-bold' : ''}>
+                            {athlete.category}
+                          </span>
+                          {hasReview && (
+                            <span
+                              title={athlete.reviewReason || 'Datos incompletos'}
+                              className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center space-x-1"
+                            >
+                              <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                              <span>⚠️ {athlete.reviewReason || 'Requiere Revisión'}</span>
+                            </span>
+                          )}
                           {(athleteRutCounts.get(athlete.rut_dni.replace(/[.\-\s]/g, '').toUpperCase()) || 0) > 1 && (
                             <span className="px-1.5 py-0.5 rounded bg-blue-900/70 text-blue-300 border border-blue-600/50 text-[10px] font-bold">
                               Adicional

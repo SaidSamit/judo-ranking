@@ -168,6 +168,16 @@ export async function logoutAdminAction(): Promise<void> {
 }
 
 /**
+ * Cierra la sesión de estación eliminando las cookies de token.
+ */
+export async function logoutStationAction(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.delete('station_token');
+  cookieStore.delete('tatami_session_slug');
+  redirect('/');
+}
+
+/**
  * Normaliza el identificador de estación ingresado por el operador.
  * Admite formatos como: "tatami-1", "tatami 1", "tatami1", "1", "mesa-1", "mesa 1".
  */

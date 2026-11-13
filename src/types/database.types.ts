@@ -777,6 +777,7 @@ export type Database = {
           id: string
           is_active: boolean
           last_seen_at: string | null
+          metadata: Json
           name: string
           organization_id: string
           pin_code: string | null
@@ -792,6 +793,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           last_seen_at?: string | null
+          metadata?: Json
           name: string
           organization_id: string
           pin_code?: string | null
@@ -807,6 +809,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           last_seen_at?: string | null
+          metadata?: Json
           name?: string
           organization_id?: string
           pin_code?: string | null

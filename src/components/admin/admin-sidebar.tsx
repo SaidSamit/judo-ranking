@@ -26,7 +26,6 @@ import {
   X,
   Shield,
   LogOut,
-  ArrowLeft,
   ExternalLink,
   Layers,
   Users,
@@ -70,9 +69,6 @@ export function AdminSidebar() {
     setIsCollapsed(next);
     localStorage.setItem('judo_sidebar_collapsed', String(next));
   };
-
-  const isInsideTournament =
-    pathname.startsWith('/admin/tournaments/') && pathname !== '/admin/tournaments';
 
   const tournamentIdMatch = pathname.match(/\/admin\/tournaments\/([^/?]+)/);
   const currentTournamentId = tournamentIdMatch ? tournamentIdMatch[1] : null;
@@ -234,6 +230,7 @@ export function AdminSidebar() {
                     <Link
                       key={item.href}
                       href={item.href}
+                      scroll={false}
                       target={item.isExternal ? '_blank' : undefined}
                       onClick={() => setIsMobileOpen(false)}
                       className={`group flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${
@@ -283,28 +280,6 @@ export function AdminSidebar() {
               </div>
             </div>
           ))}
-
-          {/* INDICADOR CONTEXTUAL: SI EL USUARIO ESTÁ GESTIONANDO UN CAMPEONATO */}
-          {isInsideTournament && !isCollapsed && (
-            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-2xl space-y-2 mt-4">
-              <div className="flex items-center space-x-2 text-amber-400 text-xs font-black">
-                <Trophy className="w-3.5 h-3.5" />
-                <span>Modo Campeonato</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Nómina, pesaje, llaves de sorteo y tatamis están concentrados en las pestañas de este campeonato.
-              </p>
-              <div className="pt-1">
-                <Link
-                  href="/admin/tournaments"
-                  className="inline-flex items-center space-x-1.5 text-xs text-amber-400 hover:text-amber-300 font-bold transition"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Volver a Campeonatos</span>
-                </Link>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* PIE DEL SIDEBAR / PERFIL DE LA ESTACIÓN */}

@@ -17,15 +17,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Monitor,
-  Play,
-  CheckCircle2,
   Clock,
   Swords,
   ChevronRight,
-  Tv,
   ArrowLeft,
   RefreshCw,
-  Sparkles,
   Layers,
   AlertCircle,
   ExternalLink,
@@ -42,6 +38,7 @@ import {
   MultiTatamiMatch,
 } from '@/app/actions/brackets';
 import { createClient } from '@/lib/supabase/client';
+import { TatamiColumnCard } from '@/components/tatami/tatami-column-card';
 
 interface MultiTatamiMonitorViewProps {
   initialTournamentId?: string;
@@ -319,267 +316,18 @@ export function MultiTatamiMonitorView({
             gridTemplateColumns: `repeat(${columns.length}, minmax(320px, 1fr))`,
           }}
         >
-          {columns.map((col) => {
-            const hasOngoing = !!col.activeMatch;
-
-            return (
-              <div
-                key={col.tatamiNumber}
-                className="bg-slate-900/80 border border-slate-800 rounded-3xl flex flex-col shadow-2xl overflow-hidden min-w-[320px]"
-              >
-                {/* CABECERA DE LA COLUMNA DE TATAMI */}
-                <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <div className="flex items-center space-x-2">
-                      <span className="w-3 h-3 rounded-full bg-amber-400 shadow-sm shadow-amber-500/50" />
-                      <h2 className="text-lg font-black text-white tracking-wider">
-                        TATAMI #{col.tatamiNumber}
-                      </h2>
-                    </div>
-                    <p className="text-[11px] text-slate-400 font-medium">
-                      {col.upcomingMatches.length + (col.activeMatch ? 1 : 0)} combates en cola •{' '}
-                      {col.finishedMatches.length} finalizados
-                    </p>
-                  </div>
-
-                  {/* ACCESOS DIRECTOS DE LA COLUMNA */}
-                  <div className="flex items-center space-x-1.5">
-                    {/* Botón Transferir Combates Masivo */}
-                    {col.upcomingMatches.length > 0 && columns.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenTransferModal(col.tatamiNumber)}
-                        className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold transition flex items-center space-x-1"
-                        title={`Transferir combates del Tatami ${col.tatamiNumber} a otro tatami`}
-                      >
-                        <ArrowRightLeft className="w-3 h-3" />
-                        <span>Mover</span>
-                      </button>
-                    )}
-
-                    <Link
-                      href={`/tatami/${col.tatamiNumber}`}
-                      target="_blank"
-                      className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold transition flex items-center space-x-1"
-                      title="Abrir Mesa de Control"
-                    >
-                      <Play className="w-3 h-3 fill-current" />
-                      <span>Mesa</span>
-                    </Link>
-
-                    <Link
-                      href={`/scoreboard/tatami-${col.tatamiNumber}`}
-                      target="_blank"
-                      className="px-2.5 py-1 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 text-[10px] font-bold transition flex items-center space-x-1"
-                      title="Abrir Marcador TV"
-                    >
-                      <Tv className="w-3 h-3" />
-                      <span>TV</span>
-                    </Link>
-                  </div>
-                </div>
-
-                {/* CUERPO: LISTA VERTICAL DE COMBATES EN CASCADA */}
-                <div className="p-3 space-y-3 flex-1 overflow-y-auto max-h-[calc(100vh-280px)]">
-                  {/* 1. COMBATE EN CURSO (SI EXISTE) */}
-                  {col.activeMatch && (
-                    <div className="bg-amber-950/40 border-2 border-amber-500/80 rounded-2xl p-3.5 space-y-2.5 shadow-xl relative overflow-hidden animate-pulse">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 flex items-center space-x-1">
-                          <Sparkles className="w-3 h-3" />
-                          <span>EN TATAMI AHORA</span>
-                        </span>
-                        <span className="text-xs font-mono font-black text-amber-400">
-                          Orden #{col.activeMatch.match_number}
-                        </span>
-                      </div>
-
-                      <div className="space-y-0.5">
-                        <span className="text-xs font-black text-white block">
-                          {col.activeMatch.category_name}
-                        </span>
-                        <span className="text-[11px] text-amber-300 font-semibold block">
-                          {col.activeMatch.round_name}
-                        </span>
-                      </div>
-
-                      {/* COMBATIENTES */}
-                      <div className="space-y-1.5 pt-1">
-                        <div className="flex items-center justify-between bg-slate-950/80 p-2 rounded-xl border border-slate-800">
-                          <div className="flex items-center space-x-2 truncate">
-                            <span className="w-2.5 h-2.5 rounded-full bg-white flex-shrink-0" />
-                            <span className="text-xs font-bold text-white truncate">
-                              {col.activeMatch.white_athlete_name}
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-slate-400 truncate max-w-[100px]">
-                            {col.activeMatch.white_club_name}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between bg-slate-950/80 p-2 rounded-xl border border-blue-950">
-                          <div className="flex items-center space-x-2 truncate">
-                            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 flex-shrink-0" />
-                            <span className="text-xs font-bold text-white truncate">
-                              {col.activeMatch.blue_athlete_name}
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-slate-400 truncate max-w-[100px]">
-                            {col.activeMatch.blue_club_name}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 2. COMBATES EN COLA (CASCADA CON CONTEO DE ESPERA) */}
-                  {col.upcomingMatches.length === 0 && !col.activeMatch ? (
-                    <div className="py-10 text-center space-y-1.5 text-slate-500">
-                      <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500/50" />
-                      <p className="text-xs font-bold text-slate-400">Cola completada</p>
-                      <p className="text-[11px]">No hay más combates pendientes en este tatami.</p>
-                    </div>
-                  ) : (
-                    col.upcomingMatches.map((m) => {
-                      const isNext = m.matchesUntilStart === 1;
-                      const isPendingWinner = m.status === 'PENDING';
-
-                      // Etiqueta dinámica de "en cuántos combates más se realizará"
-                      let countdownBadge = '';
-                      let badgeStyle = '';
-
-                      if (isNext) {
-                        countdownBadge = 'Próximo combate a entrar';
-                        badgeStyle = 'bg-blue-950 text-blue-300 border-blue-800 font-black';
-                      } else if (m.matchesUntilStart === 2) {
-                        countdownBadge = 'En 2 combates';
-                        badgeStyle = 'bg-slate-800 text-slate-200 border-slate-700 font-bold';
-                      } else {
-                        countdownBadge = `En ${m.matchesUntilStart} combates`;
-                        badgeStyle = 'bg-slate-950 text-slate-400 border-slate-800';
-                      }
-
-                      return (
-                        <div
-                          key={m.id}
-                          className={`border rounded-2xl p-3 space-y-2 transition ${
-                            isNext
-                              ? 'bg-slate-950/90 border-blue-600/60 shadow-lg'
-                              : isPendingWinner
-                              ? 'bg-slate-950/40 border-slate-800/60 opacity-70'
-                              : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
-                          }`}
-                        >
-                          {/* FILA SUPERIOR: CONTEO Y ORDEN */}
-                          <div className="flex items-center justify-between">
-                            <span
-                              className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full border ${badgeStyle}`}
-                            >
-                              {countdownBadge}
-                            </span>
-                            <span className="text-xs font-mono font-bold text-slate-400">
-                              #{m.match_number}
-                            </span>
-                          </div>
-
-                          {/* METADATOS DE CATEGORÍA Y RONDA */}
-                          <div className="space-y-0.5">
-                            <span className="text-xs font-bold text-white block truncate">
-                              {m.category_name}
-                            </span>
-                            <span className="text-[11px] text-amber-400/90 font-medium block">
-                              {m.round_name}
-                            </span>
-                          </div>
-
-                          {/* JUDOKAS */}
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between bg-slate-900/90 px-2 py-1.5 rounded-lg border border-slate-800/80">
-                              <div className="flex items-center space-x-1.5 truncate">
-                                <span className="w-2 h-2 rounded-full bg-white flex-shrink-0" />
-                                <span className="text-[11px] font-bold text-white truncate">
-                                  {m.white_athlete_name}
-                                </span>
-                              </div>
-                              <span className="text-[10px] text-slate-400 truncate max-w-[90px]">
-                                {m.white_club_name}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-between bg-slate-900/90 px-2 py-1.5 rounded-lg border border-blue-950/80">
-                              <div className="flex items-center space-x-1.5 truncate">
-                                <span className="w-2 h-2 rounded-full bg-blue-600 flex-shrink-0" />
-                                <span className="text-[11px] font-bold text-white truncate">
-                                  {m.blue_athlete_name}
-                                </span>
-                              </div>
-                              <span className="text-[10px] text-slate-400 truncate max-w-[90px]">
-                                {m.blue_club_name}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* BOTÓN LLAMAR A MESA */}
-                          {!isPendingWinner && (
-                            <button
-                              type="button"
-                              onClick={() => handleCallMatch(m.id)}
-                              className="w-full py-1 rounded-lg bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 text-[10px] font-bold uppercase tracking-wider transition flex items-center justify-center space-x-1"
-                            >
-                              <Play className="w-3 h-3 fill-current" />
-                              <span>Llamar a Tatami</span>
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-
-                  {/* 3. COMBATES FINALIZADOS (ACORDEÓN COLAPSABLE) */}
-                  {col.finishedMatches.length > 0 && (
-                    <div className="pt-2 border-t border-slate-800/80">
-                      <button
-                        type="button"
-                        onClick={() => toggleFinished(col.tatamiNumber)}
-                        className="w-full text-left text-[11px] font-bold text-slate-400 hover:text-white flex items-center justify-between p-2 rounded-xl bg-slate-950/60 border border-slate-800/60 transition"
-                      >
-                        <span className="flex items-center space-x-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>
-                            {col.finishedMatches.length} combates finalizados
-                          </span>
-                        </span>
-                        <span className="text-[10px] text-slate-500">
-                          {showFinished[col.tatamiNumber] ? 'Ocultar' : 'Ver'}
-                        </span>
-                      </button>
-
-                      {showFinished[col.tatamiNumber] && (
-                        <div className="space-y-1.5 pt-2">
-                          {col.finishedMatches.map((fm) => (
-                            <div
-                              key={fm.id}
-                              className="p-2 rounded-lg bg-slate-950/40 border border-slate-800 text-[10px] text-slate-400 flex items-center justify-between"
-                            >
-                              <span className="font-mono font-bold text-emerald-400">
-                                #{fm.match_number}
-                              </span>
-                              <span className="truncate max-w-[130px] font-medium text-slate-300">
-                                {fm.white_athlete_name} vs {fm.blue_athlete_name}
-                              </span>
-                              <span className="text-emerald-500 font-bold uppercase text-[9px]">
-                                FINISHED
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {columns.map((col) => (
+            <TatamiColumnCard
+              key={col.tatamiNumber}
+              column={col}
+              showAdminActions={true}
+              totalColumnsCount={columns.length}
+              onOpenTransferModal={handleOpenTransferModal}
+              onCallMatch={handleCallMatch}
+              showFinished={!!showFinished[col.tatamiNumber]}
+              onToggleFinished={() => toggleFinished(col.tatamiNumber)}
+            />
+          ))}
         </div>
       )}
 

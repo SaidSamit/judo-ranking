@@ -95,10 +95,31 @@ export function useTatamiShortcuts({
         return;
       }
 
-      // 3. Toketa: Cancelar/Detener Osaekomi (Tecla S)
-      if (key === 's') {
+      // 3. Toketa: Cancelar/Detener Osaekomi (Tecla S o Flecha Abajo)
+      if (key === 's' || e.key === 'ArrowDown') {
         e.preventDefault();
         onStopOsaekomi();
+        return;
+      }
+
+      // 3.1. Flechas del Teclado para Osaekomi (Izquierda = Blanco, Derecha = Azul)
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (isShift) {
+          onUndoSpecificAction('START_OSAEKOMI', 'WHITE');
+        } else {
+          onAddAction('START_OSAEKOMI', 'WHITE');
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (isShift) {
+          onUndoSpecificAction('START_OSAEKOMI', 'BLUE');
+        } else {
+          onAddAction('START_OSAEKOMI', 'BLUE');
+        }
         return;
       }
 

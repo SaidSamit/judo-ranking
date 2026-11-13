@@ -14,6 +14,7 @@ import {
   estimateCategoryMatchesCount,
   formatRoundName,
 } from '@/lib/rules/bracket-engine';
+import { sortCategories, compareJudoCategories } from '@/lib/rules/judo-categories';
 
 export interface CategoryBracketStatus {
   id: string;
@@ -184,7 +185,7 @@ export async function getTournamentCategoriesStatusAction(
       };
     });
 
-    return { success: true, categories: result };
+    return { success: true, categories: sortCategories(result) };
   } catch (err: any) {
     console.error('[getTournamentCategoriesStatusAction] Error:', err);
     return { success: false, categories: [], error: err.message };
@@ -1698,7 +1699,14 @@ export async function getTournamentPodiumsAction(
       };
     });
 
-    return { success: true, results };
+    const sortedResults = results.sort((a, b) =>
+      compareJudoCategories(
+        { name: a.categoryName, gender: a.gender },
+        { name: b.categoryName, gender: b.gender }
+      )
+    );
+
+    return { success: true, results: sortedResults };
   } catch (err: any) {
     console.error('[getTournamentPodiumsAction] Error:', err);
     return { success: false, results: [], error: err.message };
