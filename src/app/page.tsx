@@ -143,7 +143,7 @@ export default function LoginPage() {
         {/* PIE DE PÁGINA */}
         <div className="text-center text-xs text-slate-500">
           <p className="font-mono text-slate-400 font-semibold tracking-wide">
-            Versión Beta 0.1.0
+            Versión Beta 0.2.0
           </p>
         </div>
       </div>
