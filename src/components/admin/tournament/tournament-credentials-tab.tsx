@@ -11,9 +11,10 @@
 
 'use client';
 
-import React from 'react';
-import { KeyRound, Check, Copy, Printer, Monitor, Scale, FileText } from 'lucide-react';
+import React, { useState } from 'react';
+import { KeyRound, Check, Copy, Printer, Monitor, Scale, FileText, FileDown, Loader2 } from 'lucide-react';
 import { TatamiCredential } from '@/app/actions/tournament-builder';
+import { downloadElementAsPdf } from '@/lib/utils/pdf-downloader';
 
 export interface TatamiSummaryItem {
   categoriesCount: number;
@@ -38,6 +39,8 @@ export function TournamentCredentialsTab({
   onCopyPin,
   onPrint,
 }: TournamentCredentialsTabProps) {
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+
   const tatamiCredentials = credentials.filter(
     (c) => c.type === 'TATAMI_TABLE' || (c.tatami_number !== null && c.tatami_number !== undefined)
   );
@@ -45,6 +48,26 @@ export function TournamentCredentialsTab({
   const weighInCredentials = credentials.filter(
     (c) => c.type === 'WEIGH_IN' || c.station_slug?.startsWith('pesaje')
   );
+
+  const handleDownloadCredentialsPdf = async () => {
+    const el = document.getElementById('printable-credentials-container');
+    if (!el) return;
+    setIsExportingPdf(true);
+    try {
+      el.classList.remove('hidden');
+      el.classList.add('block');
+      await downloadElementAsPdf(el, {
+        filename: `Credenciales_Estaciones_${tournamentName.replace(/\s+/g, '_')}`,
+        orientation: 'portrait',
+      });
+    } catch (err) {
+      console.error('Error generando PDF de credenciales:', err);
+    } finally {
+      el.classList.remove('block');
+      el.classList.add('hidden');
+      setIsExportingPdf(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -60,18 +83,29 @@ export function TournamentCredentialsTab({
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               PINs criptográficos generados para mesas de arbitraje y estaciones oficiales de pesaje.
-              Exporta estas fichas oficiales a PDF con el resumen de cada mesa para entregarlas a los oficiales de mesa.
+              Descarga estas fichas oficiales en PDF con los controles rápidos de cada mesa para los oficiales.
             </p>
           </div>
 
           <div className="flex items-center space-x-2">
             <button
               type="button"
-              onClick={onPrint}
-              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow-lg"
+              onClick={handleDownloadCredentialsPdf}
+              disabled={isExportingPdf}
+              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-1.5 shadow-lg disabled:opacity-60 cursor-pointer"
+              title="Descargar archivo PDF con las credenciales oficiales y controles de mesa"
             >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Exportar a PDF</span>
+              {isExportingPdf ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Generando PDF...</span>
+                </>
+              ) : (
+                <>
+                  <FileDown className="w-3.5 h-3.5" />
+                  <span>Exportar a PDF</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -246,9 +280,9 @@ export function TournamentCredentialsTab({
       </section>
 
       {/* ==================================================================== */}
-      {/* VISTA OFICIAL DE EXPORTACIÓN A PDF (SOLO VISIBLE AL IMPRIMIR)        */}
+      {/* VISTA OFICIAL DE EXPORTACIÓN A PDF (CAPTURA DIRECTA CON HTML2CANVAS)  */}
       {/* ==================================================================== */}
-      <div className="hidden print:block text-slate-950 bg-white p-6 space-y-6">
+      <div id="printable-credentials-container" className="hidden text-slate-950 bg-white p-6 space-y-6 max-w-4xl mx-auto">
         {/* CABECERA OFICIAL DEL DOCUMENTO */}
         <div className="border-b-2 border-slate-950 pb-4 flex justify-between items-end">
           <div>
@@ -263,7 +297,7 @@ export function TournamentCredentialsTab({
           </div>
         </div>
 
-        {/* 1. FICHAS DE MESAS DE CONTROL CON RESUMEN */}
+        {/* 1. FICHAS DE MESAS DE CONTROL CON CONTROLES DE MESA */}
         <div className="space-y-3">
           <h3 className="text-xs font-black uppercase tracking-wider border-b border-slate-300 pb-1 text-slate-800">
             Mesas de Control de Tatami
@@ -271,12 +305,10 @@ export function TournamentCredentialsTab({
 
           <div className="grid grid-cols-2 gap-4">
             {tatamiCredentials.map((cred) => {
-              const summary = cred.tatami_number ? tatamiSummary?.[cred.tatami_number] : null;
-
               return (
                 <div
                   key={cred.station_slug}
-                  className="border-2 border-slate-800 rounded-xl p-4 space-y-3 break-inside-avoid page-break-inside-avoid shadow-sm"
+                  className="border-2 border-slate-800 rounded-xl p-4 space-y-3 break-inside-avoid shadow-sm bg-white"
                 >
                   <div className="flex justify-between items-center border-b border-slate-300 pb-1.5">
                     <span className="text-sm font-black uppercase text-slate-950">
@@ -297,26 +329,26 @@ export function TournamentCredentialsTab({
                     </span>
                   </div>
 
-                  <div className="text-xs font-mono space-y-0.5 text-slate-700">
-                    <p><strong>Estación:</strong> {cred.station_name}</p>
-                    <p><strong>Ruta de Acceso:</strong> /tatami/{cred.station_slug} o /tatami/{cred.tatami_number}</p>
-                  </div>
-
-                  {/* RESUMEN DEL CONTROL */}
-                  <div className="border-t border-slate-300 pt-2 text-xs space-y-1">
-                    <span className="font-black text-slate-900 block text-[11px] uppercase">
-                      Resumen del Control:
+                  {/* CONTROLES DE MESA Y ATAJOS RÁPIDOS (EN LUGAR DE RESUMEN DE CATEGORÍAS) */}
+                  <div className="border-t border-slate-300 pt-2 text-xs space-y-1.5">
+                    <span className="font-black text-slate-900 block text-[11px] uppercase tracking-wider">
+                      Controles de Mesa y Atajos Rápidos:
                     </span>
-                    <div className="flex justify-between font-mono text-[11px] text-slate-800">
-                      <span>Categorías Asignadas: <strong>{summary?.categoriesCount ?? 0}</strong></span>
-                      <span>Judokas Programados: <strong>{summary?.athletesCount ?? 0}</strong></span>
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-1 font-mono text-[10px] text-slate-800">
+                      <div><strong className="text-slate-950">[Espacio]:</strong> Hajime / Mate</div>
+                      <div><strong className="text-slate-950">[Enter]:</strong> Finalizar Combate</div>
+                      <div><strong className="text-blue-700">[← / A]:</strong> Osaekomi Blanco</div>
+                      <div><strong className="text-blue-900">[→ / L]:</strong> Osaekomi Azul</div>
+                      <div><strong className="text-slate-950">[↓ / S]:</strong> Toketa (Detener)</div>
+                      <div><strong className="text-slate-950">[X]:</strong> Swap Osaekomi</div>
+                      <div><strong className="text-slate-950">[Q / U]:</strong> Ippon (B / A)</div>
+                      <div><strong className="text-slate-950">[W / I]:</strong> Waza-ari (B / A)</div>
+                      <div><strong className="text-slate-950">[E / O]:</strong> Yuko (B / A)</div>
+                      <div><strong className="text-slate-950">[R / P]:</strong> Shido (B / A)</div>
+                      <div className="col-span-2 text-slate-600 border-t border-slate-200 pt-0.5">
+                        <strong className="text-slate-950">[Shift + Tecla]:</strong> Deshacer acción (Undo)
+                      </div>
                     </div>
-                    {summary && summary.categoryNames.length > 0 && (
-                      <p className="text-[10px] text-slate-600 leading-tight">
-                        <strong>Divisiones:</strong> {summary.categoryNames.slice(0, 6).join(', ')}
-                        {summary.categoryNames.length > 6 ? ` y ${summary.categoryNames.length - 6} más` : ''}
-                      </p>
-                    )}
                   </div>
                 </div>
               );
@@ -344,7 +376,7 @@ export function TournamentCredentialsTab({
                 return (
                   <div
                     key={cred.station_slug}
-                    className="border-2 border-slate-800 rounded-xl p-4 space-y-3 break-inside-avoid page-break-inside-avoid shadow-sm"
+                    className="border-2 border-slate-800 rounded-xl p-4 space-y-3 break-inside-avoid shadow-sm bg-white"
                   >
                     <div className="flex justify-between items-center border-b border-slate-300 pb-1.5">
                       <span className="text-sm font-black uppercase text-slate-950">
@@ -365,9 +397,18 @@ export function TournamentCredentialsTab({
                       </span>
                     </div>
 
-                    <div className="text-xs font-mono space-y-0.5 text-slate-700">
-                      <p><strong>Ruta de Acceso:</strong> /pesaje/{cred.station_slug}</p>
-                      <p><strong>Filtro Reglamentario:</strong> {filterText}</p>
+                    {/* OPERACIÓN DE BÁSCULA */}
+                    <div className="border-t border-slate-300 pt-2 text-xs space-y-1">
+                      <span className="font-black text-slate-900 block text-[11px] uppercase tracking-wider">
+                        Operación de Báscula:
+                      </span>
+                      <p className="text-[10px] font-mono text-slate-800">
+                        <strong>Filtro Reglamentario:</strong> {filterText}
+                      </p>
+                      <div className="grid grid-cols-2 gap-1 font-mono text-[10px] text-slate-800 pt-0.5">
+                        <div><strong className="text-slate-950">[Enter]:</strong> Confirmar Peso</div>
+                        <div><strong className="text-slate-950">[Tab / ↑↓]:</strong> Navegar Atleta</div>
+                      </div>
                     </div>
                   </div>
                 );

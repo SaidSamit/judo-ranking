@@ -13,7 +13,7 @@
 
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Trophy,
   Users,
@@ -28,8 +28,11 @@ import {
   X,
   AlertCircle,
   HelpCircle,
+  FileDown,
+  RefreshCw,
 } from 'lucide-react';
 import { BracketResult, GeneratedMatch } from '@/lib/rules/bracket-engine';
+import { downloadElementAsPdf } from '@/lib/utils/pdf-downloader';
 
 interface BracketViewerProps {
   bracketResult: BracketResult;
@@ -56,6 +59,25 @@ export function BracketViewer({
   const [selectedForSwap, setSelectedForSwap] = useState<SwapSelection | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const viewerRef = useRef<HTMLDivElement>(null);
+
+  const handleDownloadPdf = async () => {
+    if (!viewerRef.current) return;
+    setIsDownloadingPdf(true);
+    try {
+      await downloadElementAsPdf(viewerRef.current, {
+        filename: `Llave_${(categoryName || 'Torneo').replace(/[\s/\\:]+/g, '_')}`,
+        orientation: 'landscape',
+        backgroundColor: '#0f172a',
+        fitToPage: true,
+      });
+    } catch (err) {
+      console.error('Error generando PDF de llave:', err);
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
 
   // Sincronizar si cambia la prop inicial (por ejemplo al cambiar de categoría)
   useEffect(() => {
@@ -304,7 +326,10 @@ export function BracketViewer({
   };
 
   return (
-    <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-6 text-slate-100 font-sans">
+    <div
+      ref={viewerRef}
+      className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-6 text-slate-100 font-sans"
+    >
       {/* CABECERA DEL VISOR Y ACCIONES DEL DIRECTOR */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
@@ -346,44 +371,66 @@ export function BracketViewer({
           <p className="text-xs text-slate-400 mt-1">{summary.description}</p>
         </div>
 
-        {/* BOTONES DE MODO MODIFICABLE (REQUERIMIENTO: VISUAL Y MODIFICABLE) */}
-        {bracket_type !== 'UNCONTESTED' && (
-          <div className="flex items-center space-x-2">
-            {!isEditMode ? (
-              <button
-                type="button"
-                onClick={() => setIsEditMode(true)}
-                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
-                title="Permite intercambiar judokas de posición en la llave"
-              >
-                <ArrowLeftRight className="w-3.5 h-3.5" />
-                <span>Modificar Cruces</span>
-              </button>
+        {/* ACCIONES DEL DIRECTOR (DESCARGA DE PDF Y MODIFICACIÓN) */}
+        <div className="flex items-center space-x-2 flex-wrap gap-y-2" data-html2canvas-ignore="true">
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
+            disabled={isDownloadingPdf}
+            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow cursor-pointer disabled:opacity-50"
+            title="Descargar esta llave en un archivo PDF tal como se ve en pantalla"
+          >
+            {isDownloadingPdf ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                <span>Generando PDF...</span>
+              </>
             ) : (
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={handleSaveModifications}
-                  disabled={isSaving}
-                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleResetModifications}
-                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold transition flex items-center space-x-1"
-                  title="Deshacer cambios y volver al sorteo original"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Cancelar</span>
-                </button>
-              </div>
+              <>
+                <FileDown className="w-3.5 h-3.5" />
+                <span>Descargar PDF</span>
+              </>
             )}
-          </div>
-        )}
+          </button>
+
+          {bracket_type !== 'UNCONTESTED' && (
+            <>
+              {!isEditMode ? (
+                <button
+                  type="button"
+                  onClick={() => setIsEditMode(true)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                  title="Permite intercambiar judokas de posición en la llave"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" />
+                  <span>Modificar Cruces</span>
+                </button>
+              ) : (
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveModifications}
+                    disabled={isSaving}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResetModifications}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold transition flex items-center space-x-1"
+                    title="Deshacer cambios y volver al sorteo original"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Cancelar</span>
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* BANNER DE INSTRUCCIONES DE EDICIÓN O FEEDBACK */}
