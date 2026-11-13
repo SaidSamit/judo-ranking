@@ -174,3 +174,16 @@ export async function markEventsAsSyncedLocally(eventIds: string[]): Promise<voi
 
   await tx.done;
 }
+
+/**
+ * Elimina todos los eventos locales asociados a un match_id (usado para reiniciar el modo demo).
+ */
+export async function clearMatchEventsLocally(matchId: string): Promise<void> {
+  const db = await getLocalDB();
+  const tx = db.transaction('events', 'readwrite');
+  const keys = await tx.store.index('by_match').getAllKeys(matchId);
+  for (const key of keys) {
+    await tx.store.delete(key);
+  }
+  await tx.done;
+}

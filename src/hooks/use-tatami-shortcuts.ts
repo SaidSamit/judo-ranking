@@ -59,6 +59,8 @@ export interface UseTatamiShortcutsOptions {
   onStopOsaekomi: () => void;
   onSwapOsaekomi: () => void;
   onDeclareFinish: () => void;
+  onAdjustTime?: (deltaSeconds: number) => void;
+  onStartGoldenScore?: () => void;
   isEnabled?: boolean;
 }
 
@@ -69,6 +71,8 @@ export function useTatamiShortcuts({
   onStopOsaekomi,
   onSwapOsaekomi,
   onDeclareFinish,
+  onAdjustTime,
+  onStartGoldenScore,
   isEnabled = true,
 }: UseTatamiShortcutsOptions) {
   const handleKeyDown = useCallback(
@@ -91,10 +95,31 @@ export function useTatamiShortcuts({
         return;
       }
 
-      // 3. Toketa: Cancelar/Detener Osaekomi (Tecla S)
-      if (key === 's') {
+      // 3. Toketa: Cancelar/Detener Osaekomi (Tecla S o Flecha Abajo)
+      if (key === 's' || e.key === 'ArrowDown') {
         e.preventDefault();
         onStopOsaekomi();
+        return;
+      }
+
+      // 3.1. Flechas del Teclado para Osaekomi (Izquierda = Blanco, Derecha = Azul)
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (isShift) {
+          onUndoSpecificAction('START_OSAEKOMI', 'WHITE');
+        } else {
+          onAddAction('START_OSAEKOMI', 'WHITE');
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (isShift) {
+          onUndoSpecificAction('START_OSAEKOMI', 'BLUE');
+        } else {
+          onAddAction('START_OSAEKOMI', 'BLUE');
+        }
         return;
       }
 
@@ -112,7 +137,50 @@ export function useTatamiShortcuts({
         return;
       }
 
-      // 6. Mapeo Hemisférico (Puntos, Faltas y Retenciones)
+      // 5.5. Iniciar Golden Score (Tecla G) - irreversible una vez activado
+      if (key === 'g' && !isShift && onStartGoldenScore) {
+        e.preventDefault();
+        onStartGoldenScore();
+        return;
+      }
+
+      // 6. Controles Simplificados de Tiempo:
+      // Tecla '+' suma 5s (con Shift suma 1s)
+      // Tecla '-' resta 5s (con Shift resta 1s)
+      if (onAdjustTime) {
+        // Detección robusta de Tecla '-' (incluyendo Shift + '-' que produce '_' y Numpad)
+        const isMinusKey =
+          key === '-' ||
+          key === '_' ||
+          key === 'subtract' ||
+          e.code === 'NumpadSubtract' ||
+          e.code === 'Minus' ||
+          (e.code === 'Slash' && (e.key === '-' || e.key === '_'));
+
+        if (isMinusKey) {
+          e.preventDefault();
+          onAdjustTime(isShift ? -1 : -5);
+          return;
+        }
+
+        // Detección robusta de Tecla '+' (incluyendo Shift + '+' que produce '*' en teclado español, '=' en US y Numpad)
+        const isPlusKey =
+          key === '+' ||
+          key === '*' ||
+          key === '=' ||
+          key === 'add' ||
+          e.code === 'NumpadAdd' ||
+          e.code === 'Equal' ||
+          (e.code === 'BracketRight' && (e.key === '+' || e.key === '*'));
+
+        if (isPlusKey) {
+          e.preventDefault();
+          onAdjustTime(isShift ? 1 : 5);
+          return;
+        }
+      }
+
+      // 7. Mapeo Hemisférico (Puntos, Faltas y Retenciones)
       const mapping = KEY_MAP[key];
       if (mapping && mapping.target) {
         e.preventDefault();
@@ -138,6 +206,8 @@ export function useTatamiShortcuts({
       onStopOsaekomi,
       onSwapOsaekomi,
       onDeclareFinish,
+      onAdjustTime,
+      onStartGoldenScore,
     ]
   );
 

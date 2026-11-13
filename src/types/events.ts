@@ -26,7 +26,9 @@ export type MatchAction =
   | 'STOP_CLOCK'    // Mate!
   | 'RESET_CLOCK'
   // Ciclo de Vida del Combate
-  | 'DECLARATION_FINISH';
+  | 'DECLARATION_FINISH'
+  | 'START_GOLDEN_SCORE'
+  | 'STOP_GOLDEN_SCORE';
 
 export interface MatchEvent {
   id: string;
@@ -65,6 +67,14 @@ export interface MatchProjection {
   is_mathematical_victory: boolean;
   has_direct_hansoku_make: boolean;       // Requiere tipificación (Técnico vs Disciplinario)
   direct_hansoku_target: CombatantColor | null;
+  is_golden_score?: boolean;
+}
+
+export interface AuxTimerData {
+  is_active: boolean;
+  seconds_remaining: number;
+  total_seconds: number;
+  title: string;
 }
 
 export interface BroadcastMatchPayload {
@@ -84,5 +94,6 @@ export interface BroadcastMatchPayload {
   is_golden_score: boolean;
   match_status: 'SCHEDULED' | 'ONGOING' | 'PAUSED' | 'FINISHED' | 'PENDING';
   projection: MatchProjection;
+  aux_timer?: AuxTimerData | null;
   timestamp: number;
 }

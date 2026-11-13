@@ -315,3 +315,118 @@ export function getSuggestedUpperCategory(
   return null;
 }
 
+// ==============================================================================
+// MOTOR UNIFICADO DE ORDENAMIENTO CANÓNICO DE CATEGORÍAS (EDAD -> GÉNERO -> PESO)
+// ==============================================================================
+
+/**
+ * Retorna la jerarquía numérica de la división de edad.
+ * 1. Sub-7
+ * 2. Sub-9
+ * 3. Sub-11
+ * 4. Sub-13
+ * 5. Sub-15
+ * 6. Cadetes (Sub-18)
+ * 7. Junior (Sub-21)
+ * 8. Senior / Absoluto
+ * 9. Novicios (Novicio Juvenil, Novicio Adulto)
+ * 10. Master / Veteranos
+ */
+export function getDivisionSortRank(name: string): number {
+  if (!name) return 99;
+  const lower = name.toLowerCase();
+  if (lower.includes('sub-7') || lower.includes('sub 7')) return 1;
+  if (lower.includes('sub-9') || lower.includes('sub 9')) return 2;
+  if (lower.includes('sub-11') || lower.includes('sub 11')) return 3;
+  if (lower.includes('sub-13') || lower.includes('sub 13')) return 4;
+  if (lower.includes('sub-15') || lower.includes('sub 15')) return 5;
+  if (lower.includes('cadet') || lower.includes('sub-18') || lower.includes('sub 18')) return 6;
+  if (lower.includes('junior') || lower.includes('sub-21') || lower.includes('sub 21')) return 7;
+  // Validar 'novicio' antes de 'adulto' para no confundir 'Novicio Adulto' con Senior
+  if (lower.includes('novicio')) return 9;
+  if (lower.includes('senior') || lower.includes('absolut') || lower.includes('adulto')) return 8;
+  if (lower.includes('master') || lower.includes('veteran')) return 10;
+  return 99;
+}
+
+/**
+ * Retorna la jerarquía numérica de género:
+ * 1. Femenino / Damas
+ * 2. Masculino / Varones
+ * 3. Mixto / Open
+ */
+export function getGenderSortRank(name: string, gender?: string): number {
+  if (gender) {
+    const g = gender.toUpperCase();
+    if (g === 'F') return 1;
+    if (g === 'M') return 2;
+    if (g === 'MIXED') return 3;
+  }
+  const lower = (name || '').toLowerCase();
+  if (lower.includes('femenin') || lower.includes('damas') || lower.includes('mujeres')) return 1;
+  if (lower.includes('masculin') || lower.includes('varones') || lower.includes('hombres')) return 2;
+  return 3;
+}
+
+/**
+ * Extrae el valor numérico de peso para ordenamiento aritmético.
+ * Garantiza que -60kg < -66kg < -73kg < -81kg < -100kg.
+ * Las categorías pesadas abiertas con "+" (ej: +100kg, +78kg) reciben un desplazamiento
+ * de +10000 para situarse siempre al final de su división.
+ */
+export function getWeightSortValue(categoryName: string): number {
+  if (!categoryName) return 99999;
+  // 1. Coincidencia con 'kg' explícito (ej: -73kg, +100kg, -100 kg)
+  const kgMatch = categoryName.match(/([+-])\s*(\d+(?:\.\d+)?)\s*kg/i);
+  if (kgMatch) {
+    const isPlus = kgMatch[1] === '+';
+    const val = parseFloat(kgMatch[2]);
+    return isPlus ? 10000 + val : val;
+  }
+  // 2. Coincidencia al final del texto con signo (ej: "-73")
+  const endSignMatch = categoryName.match(/([+-])\s*(\d+(?:\.\d+)?)\s*$/);
+  if (endSignMatch) {
+    const isPlus = endSignMatch[1] === '+';
+    const val = parseFloat(endSignMatch[2]);
+    return isPlus ? 10000 + val : val;
+  }
+  return 99999;
+}
+
+/**
+ * Función comparadora canónica para categorías de Judo.
+ * Compara por: 1) División etaria, 2) Género, 3) Límite de peso numérico ascendente.
+ */
+export function compareJudoCategories(
+  catA: { name: string; gender?: string },
+  catB: { name: string; gender?: string }
+): number {
+  const nameA = catA?.name || '';
+  const nameB = catB?.name || '';
+
+  const divDiff = getDivisionSortRank(nameA) - getDivisionSortRank(nameB);
+  if (divDiff !== 0) return divDiff;
+
+  const genDiff = getGenderSortRank(nameA, catA?.gender) - getGenderSortRank(nameB, catB?.gender);
+  if (genDiff !== 0) return genDiff;
+
+  const weightDiff = getWeightSortValue(nameA) - getWeightSortValue(nameB);
+  if (weightDiff !== 0) return weightDiff;
+
+  return nameA.localeCompare(nameB);
+}
+
+/**
+ * Ordena un arreglo de nombres de categoría en formato string.
+ */
+export function sortCategoryNames(names: string[]): string[] {
+  return [...names].sort((a, b) => compareJudoCategories({ name: a }, { name: b }));
+}
+
+/**
+ * Ordena un arreglo de objetos de categoría que tengan al menos la propiedad `name`.
+ */
+export function sortCategories<T extends { name: string; gender?: string }>(categories: T[]): T[] {
+  return [...categories].sort(compareJudoCategories);
+}
+

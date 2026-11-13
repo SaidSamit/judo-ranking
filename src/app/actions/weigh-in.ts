@@ -5,6 +5,7 @@
 'use server';
 
 import { createAdminClient } from '@/lib/supabase/admin';
+import { isWeightValidForCategory } from '@/lib/rules/judo-categories';
 
 export interface WeighInAthlete {
   registration_id: string;
@@ -126,7 +127,19 @@ export async function recordAthleteWeightAction(params: {
   newCategoryName?: string;
   tournamentId?: string;
   organizationId?: string;
-}): Promise<{ success: boolean; message: string; updatedCategory?: string; error?: string }> {
+}): Promise<{
+  success: boolean;
+  message: string;
+  updatedCategory?: string;
+  updatedRegistrations?: Array<{
+    registration_id: string;
+    category_id: string;
+    category_name: string;
+    actual_weight: number;
+    weigh_in_status: 'PASSED' | 'DSQ';
+  }>;
+  error?: string;
+}> {
   try {
     const supabase = createAdminClient();
     const {
@@ -143,6 +156,7 @@ export async function recordAthleteWeightAction(params: {
       .from('tournament_registrations')
       .select(`
         id,
+        athlete_id,
         tournament_id,
         organization_id,
         athlete:athletes (
@@ -157,6 +171,7 @@ export async function recordAthleteWeightAction(params: {
     const actualTourId = regInfo?.tournament_id || tournamentId;
     const actualOrgId = regInfo?.organization_id || organizationId;
     const athleteData = regInfo?.athlete as any;
+    const athleteId = regInfo?.athlete_id || athleteData?.id;
     const athleteGender = athleteData?.gender || 'M';
 
     let targetCategoryId: string | undefined;
@@ -219,34 +234,110 @@ export async function recordAthleteWeightAction(params: {
       }
     }
 
-    const updatePayload: Record<string, any> = {
-      actual_weight: actualWeight,
-      weigh_in_status: status,
-      weigh_in_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+    const nowIso = new Date().toISOString();
+    const updatedRegistrations: Array<{
+      registration_id: string;
+      category_id: string;
+      category_name: string;
+      actual_weight: number;
+      weigh_in_status: 'PASSED' | 'DSQ';
+    }> = [];
 
+    // Si es reclasificación puntual hacia una nueva categoría
     if (targetCategoryId) {
-      updatePayload.category_id = targetCategoryId;
+      const { error: updateErr } = await supabase
+        .from('tournament_registrations')
+        .update({
+          actual_weight: actualWeight,
+          weigh_in_status: status,
+          weigh_in_at: nowIso,
+          updated_at: nowIso,
+          category_id: targetCategoryId,
+        })
+        .eq('id', registrationId);
+
+      if (updateErr) {
+        throw new Error(`Error actualizando pesaje: ${updateErr.message}`);
+      }
+
+      updatedRegistrations.push({
+        registration_id: registrationId,
+        category_id: targetCategoryId,
+        category_name: newCategoryName!.trim(),
+        actual_weight: actualWeight,
+        weigh_in_status: status,
+      });
     }
 
-    const { error: updateErr } = await supabase
-      .from('tournament_registrations')
-      .update(updatePayload)
-      .eq('id', registrationId);
+    // Sincronizar el peso real en todas las demás categorías del mismo atleta en este campeonato
+    if (athleteId) {
+      const { data: siblingRegs, error: sibErr } = await supabase
+        .from('tournament_registrations')
+        .select('id, category_id, category:categories(id, name)')
+        .eq('tournament_id', actualTourId)
+        .eq('athlete_id', athleteId);
 
-    if (updateErr) {
-      throw new Error(`Error actualizando pesaje: ${updateErr.message}`);
+      if (sibErr) {
+        throw new Error(`Error consultando inscripciones del atleta: ${sibErr.message}`);
+      }
+
+      for (const reg of siblingRegs || []) {
+        if (targetCategoryId && reg.id === registrationId) continue;
+
+        const catObj = Array.isArray(reg.category) ? reg.category[0] : reg.category;
+        const catName = catObj?.name || '';
+        const { valid } = catName ? isWeightValidForCategory(actualWeight, catName) : { valid: status === 'PASSED' };
+        const regStatus: 'PASSED' | 'DSQ' = valid ? 'PASSED' : 'DSQ';
+
+        const { error: syncErr } = await supabase
+          .from('tournament_registrations')
+          .update({
+            actual_weight: actualWeight,
+            weigh_in_status: regStatus,
+            weigh_in_at: nowIso,
+            updated_at: nowIso,
+          })
+          .eq('id', reg.id);
+
+        if (syncErr) {
+          throw new Error(`Error sincronizando pesaje en categoría "${catName}": ${syncErr.message}`);
+        }
+
+        updatedRegistrations.push({
+          registration_id: reg.id,
+          category_id: reg.category_id,
+          category_name: catName,
+          actual_weight: actualWeight,
+          weigh_in_status: regStatus,
+        });
+      }
+    } else if (!targetCategoryId) {
+      const { error: updateErr } = await supabase
+        .from('tournament_registrations')
+        .update({
+          actual_weight: actualWeight,
+          weigh_in_status: status,
+          weigh_in_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq('id', registrationId);
+
+      if (updateErr) {
+        throw new Error(`Error actualizando pesaje: ${updateErr.message}`);
+      }
     }
 
     const msg = targetCategoryId
       ? `Peso ${actualWeight}kg registrado (${status}). Atleta reubicado con éxito a "${newCategoryName}".`
+      : updatedRegistrations.length > 1
+      ? `Peso ${actualWeight}kg sincronizado y validado en las ${updatedRegistrations.length} categorías del judoka.`
       : `Peso ${actualWeight}kg registrado (${status}) exitosamente.`;
 
     return {
       success: true,
       message: msg,
       updatedCategory: newCategoryName,
+      updatedRegistrations,
     };
   } catch (err: any) {
     console.error('[recordAthleteWeightAction] Error:', err);

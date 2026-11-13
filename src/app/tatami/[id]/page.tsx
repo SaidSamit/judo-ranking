@@ -12,6 +12,7 @@ import { getMatchByIdAction } from '@/app/actions/matches';
 import { getTatamiQueueMatchesAction } from '@/app/actions/brackets';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { decodeJwt } from 'jose';
 
 interface TatamiPageProps {
   params: Promise<{ id: string }>;
@@ -58,27 +59,60 @@ export default async function TatamiPage({ params }: TatamiPageProps) {
 
   const tatamiNum = parseInt(id.replace(/\D/g, '') || '1', 10);
 
+  // 2. Extraer el tournament_id directamente del token de sesión de la estación
+  let sessionTournamentId: string | undefined;
+  if (stationToken) {
+    try {
+      const payload = decodeJwt(stationToken) as any;
+      sessionTournamentId = payload.tournament_id;
+    } catch {
+      // Ignorar fallo de decodificación
+    }
+  }
+
+  const supabase = createAdminClient();
+  let tournamentData: { id: string; name: string } | null = null;
+
+  // Si la mesa se autenticó con sus credenciales, cargar exclusivamente los datos de SU campeonato
+  if (sessionTournamentId) {
+    const { data: tour } = await supabase
+      .from('tournaments')
+      .select('id, name')
+      .eq('id', sessionTournamentId)
+      .maybeSingle();
+
+    if (tour) {
+      tournamentData = tour;
+    }
+  }
+
+  // Fallback solo para administradores navegando sin token de estación
+  if (!tournamentData) {
+    const { data: activeTour } = await supabase
+      .from('tournaments')
+      .select('id, name')
+      .eq('status', 'ACTIVE')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    tournamentData = activeTour;
+  }
+
+  const effectiveTournamentId = tournamentData?.id;
+  const tournamentName = tournamentData?.name || 'Campeonato Oficial de Judo';
+
   let loadedMatch: LocalMatch | null = null;
 
-  // Consultar campeonato activo para resolver su contexto y nombre oficial
-  const supabase = createAdminClient();
-  const { data: activeTour } = await supabase
-    .from('tournaments')
-    .select('id, name')
-    .eq('status', 'ACTIVE')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  // 1. Si el parámetro es un UUID de combate específico (ej: desde "Llamar a Tatami")
+  // 3. Si el parámetro es un UUID de combate específico (ej: desde "Llamar a Tatami")
   if (isValidUuid(id)) {
     const res = await getMatchByIdAction(id);
     if (res.success && res.match) {
       loadedMatch = res.match;
     }
   } else {
-    // 2. Si el parámetro es un número o slug de tatami (ej: /tatami/1 o /tatami/tatami-1)
-    const queueRes = await getTatamiQueueMatchesAction(tatamiNum, activeTour?.id);
+    // 4. Si el parámetro es un número o slug de tatami (ej: /tatami/1 o /tatami/tatami-1)
+    const queueRes = await getTatamiQueueMatchesAction(tatamiNum, effectiveTournamentId);
     if (queueRes.success && queueRes.matches.length > 0) {
       // Tomar el primer combate activo o programado en la cola (con atletas ya definidos)
       const firstScheduled =
@@ -87,7 +121,7 @@ export default async function TatamiPage({ params }: TatamiPageProps) {
       if (firstScheduled) {
         loadedMatch = {
           id: firstScheduled.id,
-          tournament_id: firstScheduled.tournament_id || activeTour?.id || '',
+          tournament_id: firstScheduled.tournament_id || effectiveTournamentId || '',
           category_id: firstScheduled.category?.id || firstScheduled.category_id || '',
           category_name: firstScheduled.category?.name || 'Categoría Oficial',
           tatami_number: firstScheduled.tatami_number,
@@ -113,12 +147,12 @@ export default async function TatamiPage({ params }: TatamiPageProps) {
     }
   }
 
-  // 3. Si no hay combate programado en la cola de este tatami, mostrar pantalla de espera oficial
+  // 5. Si no hay combate programado en la cola de este tatami, mostrar pantalla de espera oficial
   if (!loadedMatch) {
     return (
       <TatamiStandbyView
         tatamiNumber={tatamiNum}
-        tournamentName={activeTour?.name || 'Campeonato Oficial de Judo'}
+        tournamentName={tournamentName}
       />
     );
   }

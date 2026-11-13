@@ -25,12 +25,14 @@ export type BroadcastMode = 'EMITTER' | 'RECEIVER';
 export type ConnectionStatus = 'CONNECTING' | 'SUBSCRIBED' | 'DISCONNECTED' | 'ERROR';
 
 const BROADCAST_EVENT_NAME = 'MATCH_STATE_UPDATE';
+const SYNC_REQUEST_EVENT_NAME = 'REQUEST_STATE_SYNC';
 
 interface UseRealtimeBroadcastOptions {
   channelName: string;                     // Ej: 'tatami-1' o 'match-xyz'
   mode: BroadcastMode;
   accessToken?: string;                    // Token JWT de estación si es emisor autenticado
   onStateReceived?: (payload: BroadcastMatchPayload) => void;
+  onSyncRequested?: () => void;
 }
 
 export function useRealtimeBroadcast({
@@ -38,17 +40,23 @@ export function useRealtimeBroadcast({
   mode,
   accessToken,
   onStateReceived,
+  onSyncRequested,
 }: UseRealtimeBroadcastOptions) {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('CONNECTING');
   const [lastReceivedState, setLastReceivedState] = useState<BroadcastMatchPayload | null>(null);
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const onStateReceivedRef = useRef(onStateReceived);
+  const onSyncRequestedRef = useRef(onSyncRequested);
 
-  // Mantener la referencia actualizada de la callback sin provocar reconexiones del useEffect
+  // Mantener la referencia actualizada de las callbacks sin provocar reconexiones del useEffect
   useEffect(() => {
     onStateReceivedRef.current = onStateReceived;
   }, [onStateReceived]);
+
+  useEffect(() => {
+    onSyncRequestedRef.current = onSyncRequested;
+  }, [onSyncRequested]);
 
   useEffect(() => {
     if (!channelName) return;
@@ -69,7 +77,7 @@ export function useRealtimeBroadcast({
 
     channelRef.current = channel;
 
-    // 3. Configurar escucha si estamos en MODO RECEPTOR (Pantalla de TV / Scoreboard)
+    // 3. Configurar escucha según el rol (RECEPTOR recibe estados; EMISOR responde a solicitudes de sync)
     if (mode === 'RECEIVER') {
       channel.on(
         'broadcast',
@@ -81,12 +89,27 @@ export function useRealtimeBroadcast({
           }
         }
       );
+    } else if (mode === 'EMITTER') {
+      channel.on('broadcast', { event: SYNC_REQUEST_EVENT_NAME }, () => {
+        if (onSyncRequestedRef.current) {
+          onSyncRequestedRef.current();
+        }
+      });
     }
 
     // 4. Suscribirse al canal WebSocket
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setConnectionStatus('SUBSCRIBED');
+        if (mode === 'RECEIVER') {
+          channel
+            .send({
+              type: 'broadcast',
+              event: SYNC_REQUEST_EVENT_NAME,
+              payload: { requestedAt: Date.now() },
+            })
+            .catch(() => {});
+        }
       } else if (status === 'CLOSED') {
         setConnectionStatus('DISCONNECTED');
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {

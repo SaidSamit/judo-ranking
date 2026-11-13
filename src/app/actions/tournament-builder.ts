@@ -20,15 +20,18 @@ import bcrypt from 'bcryptjs';
 import { createAdminClient } from '@/lib/supabase/admin';
 
 export interface TatamiCredential {
-  tatami_number: number;
+  tatami_number?: number | null;
   station_slug: string;
   station_name: string;
   pin: string; // PIN numérico en texto plano para visualización e impresión del Director
   type: string;
+  metadata?: Record<string, any> | null;
   is_active: boolean;
   last_seen_at?: string | null;
   created_at: string;
 }
+
+export type StationCredential = TatamiCredential;
 
 export interface TournamentDetails {
   id: string;
@@ -230,14 +233,10 @@ export async function createTournamentWithTatamisAction(
       // b. Upsert atómico en la tabla 'stations'
       const { error: stationsError } = await supabase
         .from('stations')
-        .upsert(stationUpserts);
+        .upsert(stationUpserts, { onConflict: 'tournament_id,slug' });
 
-      if (stationsError && stationsError.message.includes('column')) {
-        // Fallback de compatibilidad si la migración de columnas no se ha corrido aún
-        const legacyUpserts = stationUpserts.map(({ tournament_id, pin_code, ...rest }) => rest);
-        await supabase
-          .from('stations')
-          .upsert(legacyUpserts, { onConflict: 'organization_id,slug' });
+      if (stationsError) {
+        console.warn('Error en upsert de estaciones:', stationsError.message);
       }
     } catch (dbErr) {
       console.warn('Supabase no disponible o error en DDL, operando con almacén de respaldo:', dbErr);
@@ -288,15 +287,14 @@ export async function getTournamentCredentialsAction(
       targetTourId = activeTour?.id || 'e0000000-0000-0000-0000-000000000001';
     }
 
-    // 1. Intentar consultar estaciones directamente vinculadas al torneo
+    // 1. Intentar consultar estaciones directamente vinculadas al torneo (tatamis y pesajes)
     let tourStationsData: any[] | null = null;
     try {
       const { data: directStations, error: directErr } = await supabase
         .from('stations')
-        .select('id, name, slug, tatami_number, pin_code, is_active, last_seen_at, created_at')
+        .select('id, name, slug, tatami_number, pin_code, is_active, last_seen_at, created_at, type, metadata')
         .eq('tournament_id', targetTourId)
-        .eq('type', 'TATAMI_TABLE')
-        .order('tatami_number', { ascending: true });
+        .order('tatami_number', { ascending: true, nullsFirst: false });
 
       if (!directErr && directStations && directStations.length > 0) {
         tourStationsData = directStations;
@@ -315,7 +313,7 @@ export async function getTournamentCredentialsAction(
     if (!tourError && tourData) {
       const config = (tourData.config as any) || {};
       let savedCredentials: TatamiCredential[] = [];
-      const tatamiCount = config.tatami_count || tourStationsData?.length || 3;
+      const tatamiCount = config.tatami_count || tourStationsData?.filter(s => s.type === 'TATAMI_TABLE').length || 3;
 
       if (tourStationsData && tourStationsData.length > 0) {
         // Fuente primaria limpia: datos relacionales nativos de la tabla stations
@@ -324,7 +322,8 @@ export async function getTournamentCredentialsAction(
           station_slug: s.slug,
           station_name: s.name,
           pin: s.pin_code || '******',
-          type: 'TATAMI_TABLE',
+          type: s.type || 'TATAMI_TABLE',
+          metadata: s.metadata || null,
           is_active: s.is_active,
           last_seen_at: s.last_seen_at,
           created_at: s.created_at,

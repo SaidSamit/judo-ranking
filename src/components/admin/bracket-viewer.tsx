@@ -68,13 +68,44 @@ export function BracketViewer({
   const { bracket_type, matches, summary } = bracket;
 
   // ============================================================================
-  // AGRUPACIÓN POR RONDAS PARA ELIMINACIÓN SIMPLE
+  // AGRUPACIÓN POR RONDAS PARA ELIMINACIÓN SIMPLE (ÁRBOL PRINCIPAL)
   // ============================================================================
   const singleEliminationRounds = useMemo(() => {
     if (bracket_type !== 'SINGLE_ELIMINATION') return [];
 
+    // Mapeo exhaustivo para cálculo recursivo de orden vertical en el árbol
+    const matchesById = new Map<string, GeneratedMatch>();
+    matches.forEach((m) => matchesById.set(m.id, m));
+
+    // Función que calcula la posición vertical pura en el árbol (0, 1, 2, ...)
+    // - La Gran Final tiene orden 0.
+    // - Un combate hijo que entra en slot WHITE tiene orden parentOrder * 2.
+    // - Un combate hijo que entra en slot BLUE tiene orden parentOrder * 2 + 1.
+    const treeOrderMemo = new Map<string, number>();
+
+    function getMatchTreeOrder(m: GeneratedMatch): number {
+      if (treeOrderMemo.has(m.id)) return treeOrderMemo.get(m.id)!;
+      if (!m.next_match_id || !matchesById.has(m.next_match_id)) {
+        treeOrderMemo.set(m.id, 0);
+        return 0;
+      }
+      const parent = matchesById.get(m.next_match_id)!;
+      const parentOrder = getMatchTreeOrder(parent);
+      const isBlue = m.next_match_slot === 'BLUE';
+      const order = parentOrder * 2 + (isBlue ? 1 : 0);
+      treeOrderMemo.set(m.id, order);
+      return order;
+    }
+
     const roundsMap = new Map<string, GeneratedMatch[]>();
     matches.forEach((m) => {
+      // Excluir rondas de repechaje y disputa de bronce del árbol principal
+      if (
+        m.round.startsWith('REPECHAGE') ||
+        m.round.startsWith('BRONZE')
+      ) {
+        return;
+      }
       const roundKey = m.round;
       if (!roundsMap.has(roundKey)) {
         roundsMap.set(roundKey, []);
@@ -82,12 +113,25 @@ export function BracketViewer({
       roundsMap.get(roundKey)!.push(m);
     });
 
-    // Ordenar de mayor cantidad de combates a menor (Ronda 1 -> Cuartos -> Semis -> Final)
-    const sorted = Array.from(roundsMap.entries()).sort(
-      (a, b) => b[1].length - a[1].length
-    );
+    // Orden cronológico oficial del torneo (Ronda 1 -> Cuartos -> Semis -> Final)
+    const ROUND_PROGRESSION = ['R64', 'R32', 'R16', 'QF', 'SF', 'FINAL'];
+    const sorted = Array.from(roundsMap.entries()).sort((a, b) => {
+      const idxA = ROUND_PROGRESSION.indexOf(a[0]);
+      const idxB = ROUND_PROGRESSION.indexOf(b[0]);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      return b[1].length - a[1].length;
+    });
 
     return sorted.map(([roundKey, roundMatches]) => {
+      // Ordenar los combates estrictamente según su posición geométrica en el árbol binario
+      // garantizando que Semifinal 1 (Rama A) quede arriba y Semifinal 2 (Rama B) abajo
+      roundMatches.sort((a, b) => {
+        const orderA = getMatchTreeOrder(a);
+        const orderB = getMatchTreeOrder(b);
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.match_number || 0) - (b.match_number || 0);
+      });
+
       let displayName = 'Ronda';
       if (roundKey === 'FINAL') displayName = 'Gran Final 🥇';
       else if (roundKey === 'SF') displayName = 'Semifinales';
@@ -102,6 +146,25 @@ export function BracketViewer({
         matches: roundMatches,
       };
     });
+  }, [bracket_type, matches]);
+
+  // Rondas de Repechaje y Doble Bronce (ubicadas en la sección inferior)
+  const repechageTracks = useMemo(() => {
+    if (bracket_type !== 'SINGLE_ELIMINATION') return null;
+
+    const rep1 = matches.find((m) => m.round === 'REPECHAGE_1');
+    const rep2 = matches.find((m) => m.round === 'REPECHAGE_2');
+    const b1 = matches.find((m) => m.round === 'BRONZE_1');
+    const b2 = matches.find((m) => m.round === 'BRONZE_2');
+    const singleBronze = matches.find((m) => m.round === 'BRONZE');
+
+    if (!rep1 && !rep2 && !b1 && !b2 && !singleBronze) return null;
+
+    return {
+      track1: { rep: rep1, bronze: b1 },
+      track2: { rep: rep2, bronze: b2 },
+      singleBronze,
+    };
   }, [bracket_type, matches]);
 
   // Agrupación para Round Robin
@@ -122,6 +185,23 @@ export function BracketViewer({
       name: `Ronda ${idx + 1} (Berger)`,
       matches: rMatches,
     }));
+  }, [bracket_type, matches]);
+
+  // Agrupación para modalidad Pool Doble (5 Judokas IJF)
+  const doublePoolData = useMemo(() => {
+    if (bracket_type !== 'DOUBLE_POOL_5') return null;
+
+    const poolAMatches = matches.filter((m) => m.round.startsWith('DP_POOL_A'));
+    const poolBMatch = matches.find((m) => m.round === 'DP_SEMI');
+    const finalMatch = matches.find((m) => m.round === 'DP_FINAL');
+    const bronzeMatch = matches.find((m) => m.round === 'DP_BRONZE');
+
+    return {
+      poolAMatches,
+      poolBMatch,
+      finalMatch,
+      bronzeMatch,
+    };
   }, [bracket_type, matches]);
 
   // ============================================================================
@@ -235,17 +315,25 @@ export function BracketViewer({
             </h3>
             <span
               className={`text-xs px-2.5 py-0.5 rounded-full font-mono font-bold uppercase ${
-                bracket_type === 'BEST_OF_3'
+                bracket_type === 'UNCONTESTED'
+                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                  : bracket_type === 'BEST_OF_3'
                   ? 'bg-purple-950 text-purple-300 border border-purple-800'
                   : bracket_type === 'ROUND_ROBIN'
                   ? 'bg-amber-950 text-amber-300 border border-amber-800'
+                  : bracket_type === 'DOUBLE_POOL_5'
+                  ? 'bg-teal-950 text-teal-300 border border-teal-800'
                   : 'bg-blue-950 text-blue-300 border border-blue-800'
               }`}
             >
-              {bracket_type === 'BEST_OF_3'
+              {bracket_type === 'UNCONTESTED'
+                ? 'Campeón Directo'
+                : bracket_type === 'BEST_OF_3'
                 ? 'Al Mejor de 3'
                 : bracket_type === 'ROUND_ROBIN'
                 ? 'Round Robin'
+                : bracket_type === 'DOUBLE_POOL_5'
+                ? 'Pool Doble'
                 : 'Eliminación Simple'}
             </span>
 
@@ -259,41 +347,43 @@ export function BracketViewer({
         </div>
 
         {/* BOTONES DE MODO MODIFICABLE (REQUERIMIENTO: VISUAL Y MODIFICABLE) */}
-        <div className="flex items-center space-x-2">
-          {!isEditMode ? (
-            <button
-              type="button"
-              onClick={() => setIsEditMode(true)}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
-              title="Permite intercambiar atletas de posición en la llave"
-            >
-              <ArrowLeftRight className="w-3.5 h-3.5" />
-              <span>Modificar Cruces</span>
-            </button>
-          ) : (
-            <div className="flex items-center space-x-2">
+        {bracket_type !== 'UNCONTESTED' && (
+          <div className="flex items-center space-x-2">
+            {!isEditMode ? (
               <button
                 type="button"
-                onClick={handleSaveModifications}
-                disabled={isSaving}
-                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                onClick={() => setIsEditMode(true)}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                title="Permite intercambiar judokas de posición en la llave"
               >
-                <Save className="w-3.5 h-3.5" />
-                <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
+                <ArrowLeftRight className="w-3.5 h-3.5" />
+                <span>Modificar Cruces</span>
               </button>
+            ) : (
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={handleSaveModifications}
+                  disabled={isSaving}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{isSaving ? 'Guardando...' : 'Guardar Cambios'}</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleResetModifications}
-                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold transition flex items-center space-x-1"
-                title="Deshacer cambios y volver al sorteo original"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Cancelar</span>
-              </button>
-            </div>
-          )}
-        </div>
+                <button
+                  type="button"
+                  onClick={handleResetModifications}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold transition flex items-center space-x-1"
+                  title="Deshacer cambios y volver al sorteo original"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Cancelar</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* BANNER DE INSTRUCCIONES DE EDICIÓN O FEEDBACK */}
@@ -303,8 +393,8 @@ export function BracketViewer({
             <ArrowLeftRight className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <span>
               {selectedForSwap
-                ? `Haz clic sobre otro atleta para intercambiarlo con "${selectedForSwap.athleteName}".`
-                : 'Modo Intercambio: Haz clic sobre cualquier atleta para moverlo de cruce.'}
+                ? `Haz clic sobre otro judoka para intercambiarlo con "${selectedForSwap.athleteName}".`
+                : 'Modo Intercambio: Haz clic sobre cualquier judoka para moverlo de cruce.'}
             </span>
           </div>
           {selectedForSwap && (
@@ -380,6 +470,252 @@ export function BracketViewer({
               );
             })}
           </div>
+
+          {/* SECCIÓN INFERIOR: REPECHAJE Y DISPUTA DE BRONCES (ESTILO REGLAMENTO IJF) */}
+          {repechageTracks && (
+            <div className="mt-8 pt-6 border-t border-slate-800 space-y-4">
+              <div className="flex items-center space-x-2 text-orange-400 font-bold text-xs uppercase tracking-wider">
+                <Swords className="w-4 h-4 text-orange-400" />
+                <span>Sistema de Repechaje y Doble Bronce</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-950/60 p-4 rounded-xl border border-slate-800">
+                {/* Rama Superior (Repechaje 1 -> Bronce A) */}
+                {(repechageTracks.track1.rep || repechageTracks.track1.bronze) && (
+                  <div className="space-y-3">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between border-b border-slate-800 pb-1.5">
+                      <span>Cuadro Superior (Rama A)</span>
+                      <span className="text-orange-400 text-[10px]">3° Lugar (Bronce A)</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                      {repechageTracks.track1.rep && (
+                        <div className="flex-1 w-full">
+                          <div className="text-[10px] text-slate-400 font-mono mb-1 font-bold">Repechaje 1</div>
+                          <InteractiveMatchCard
+                            match={repechageTracks.track1.rep}
+                            isEditMode={isEditMode}
+                            selectedForSwap={selectedForSwap}
+                            onSelectSlot={handleSelectSlotForSwap}
+                          />
+                        </div>
+                      )}
+                      {repechageTracks.track1.rep && repechageTracks.track1.bronze && (
+                        <div className="hidden sm:flex text-slate-600 font-black text-lg">➔</div>
+                      )}
+                      {repechageTracks.track1.bronze && (
+                        <div className="flex-1 w-full">
+                          <div className="text-[10px] text-amber-400 font-mono mb-1 font-bold">Disputa por Bronce A</div>
+                          <InteractiveMatchCard
+                            match={repechageTracks.track1.bronze}
+                            isEditMode={isEditMode}
+                            selectedForSwap={selectedForSwap}
+                            onSelectSlot={handleSelectSlotForSwap}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Rama Inferior (Repechaje 2 -> Bronce B) */}
+                {(repechageTracks.track2.rep || repechageTracks.track2.bronze) && (
+                  <div className="space-y-3">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between border-b border-slate-800 pb-1.5">
+                      <span>Cuadro Inferior (Rama B)</span>
+                      <span className="text-orange-400 text-[10px]">3° Lugar (Bronce B)</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row items-center gap-3">
+                      {repechageTracks.track2.rep && (
+                        <div className="flex-1 w-full">
+                          <div className="text-[10px] text-slate-400 font-mono mb-1 font-bold">Repechaje 2</div>
+                          <InteractiveMatchCard
+                            match={repechageTracks.track2.rep}
+                            isEditMode={isEditMode}
+                            selectedForSwap={selectedForSwap}
+                            onSelectSlot={handleSelectSlotForSwap}
+                          />
+                        </div>
+                      )}
+                      {repechageTracks.track2.rep && repechageTracks.track2.bronze && (
+                        <div className="hidden sm:flex text-slate-600 font-black text-lg">➔</div>
+                      )}
+                      {repechageTracks.track2.bronze && (
+                        <div className="flex-1 w-full">
+                          <div className="text-[10px] text-amber-400 font-mono mb-1 font-bold">Disputa por Bronce B</div>
+                          <InteractiveMatchCard
+                            match={repechageTracks.track2.bronze}
+                            isEditMode={isEditMode}
+                            selectedForSwap={selectedForSwap}
+                            onSelectSlot={handleSelectSlotForSwap}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CASO: MODALIDAD POOL DOBLE (5 JUDOKAS IJF) - INTERFAZ MODERNA Y LIMPIA */}
+      {bracket_type === 'DOUBLE_POOL_5' && doublePoolData && (
+        <div className="space-y-6 pb-6 pt-2">
+          {/* FASE 1: CLASIFICACIÓN POR POOLS (POOLS A Y B EN PARALELO) */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center space-x-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow" />
+                <h3 className="text-xs font-black uppercase tracking-wider text-slate-300">
+                  Fase Clasificatoria • Grupos A y B
+                </h3>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">
+                Modalidad Pool Doble (5 Judokas)
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Pool A (Round Robin - 3 Judokas) */}
+              <div className="bg-slate-950/70 border border-amber-500/30 rounded-2xl p-4 shadow-lg space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 border-b border-amber-500/20 pb-2.5">
+                  <div className="flex items-center space-x-2">
+                    <span className="w-3 h-3 rounded-full bg-amber-400 shadow" />
+                    <span className="text-xs font-black uppercase tracking-wider text-amber-400">
+                      Pool A (Round Robin • 3 Judokas)
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-300/90 font-mono px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 self-start sm:self-auto">
+                    1° ➔ Gran Final • 2° ➔ Bronce
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {doublePoolData.poolAMatches.map((match) => (
+                    <InteractiveMatchCard
+                      key={match.id}
+                      match={match}
+                      isEditMode={isEditMode}
+                      selectedForSwap={selectedForSwap}
+                      onSelectSlot={handleSelectSlotForSwap}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Pool B (Semifinal Directa - 2 Judokas) */}
+              <div className="bg-slate-950/70 border border-emerald-500/30 rounded-2xl p-4 shadow-lg space-y-3.5 flex flex-col justify-between">
+                <div className="space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 border-b border-emerald-500/20 pb-2.5">
+                    <div className="flex items-center space-x-2">
+                      <span className="w-3 h-3 rounded-full bg-emerald-400 shadow" />
+                      <span className="text-xs font-black uppercase tracking-wider text-emerald-400">
+                        Pool B (Semifinal Directa • 2 Judokas)
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-bold text-emerald-300/90 font-mono px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 self-start sm:self-auto">
+                      Ganador ➔ Gran Final • Perdedor ➔ Bronce
+                    </span>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {doublePoolData.poolBMatch && (
+                      <InteractiveMatchCard
+                        match={doublePoolData.poolBMatch}
+                        isEditMode={isEditMode}
+                        selectedForSwap={selectedForSwap}
+                        onSelectSlot={handleSelectSlotForSwap}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                {/* Tarjeta informativa limpia */}
+                <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-slate-400 text-xs flex items-start space-x-2.5 mt-2">
+                  <HelpCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] leading-relaxed">
+                    El ganador del Pool B clasifica a disputar el <strong className="text-amber-400">Oro</strong> en la Gran Final, y el perdedor pasa a disputar el <strong className="text-orange-400">Bronce</strong> oficial.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* FASE 2: FASE FINAL POR MEDALLAS */}
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center space-x-2">
+                <Trophy className="w-4 h-4 text-amber-400" />
+                <h3 className="text-xs font-black uppercase tracking-wider text-amber-400">
+                  Fase Final por Medallas 🏆
+                </h3>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">
+                Combates Decisivos por el Podio
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Gran Final (1° y 2° Lugar - Oro y Plata) */}
+              <div className="bg-gradient-to-b from-amber-950/20 to-slate-950/80 border border-amber-500/40 rounded-2xl p-4 shadow-xl space-y-3">
+                <div className="flex items-center justify-between border-b border-amber-500/30 pb-2">
+                  <div className="flex items-center space-x-2">
+                    <Trophy className="w-4 h-4 text-amber-400" />
+                    <div>
+                      <span className="text-xs font-black uppercase tracking-wider text-amber-400 block">
+                        Gran Final (1° y 2° Lugar)
+                      </span>
+                      <span className="text-[10px] text-slate-400 block font-mono">
+                        1° Pool A vs Ganador Pool B
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-black text-amber-400 px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 shadow">
+                    🥇 ORO Y PLATA
+                  </span>
+                </div>
+                {doublePoolData.finalMatch && (
+                  <InteractiveMatchCard
+                    match={doublePoolData.finalMatch}
+                    isEditMode={isEditMode}
+                    selectedForSwap={selectedForSwap}
+                    onSelectSlot={handleSelectSlotForSwap}
+                  />
+                )}
+              </div>
+
+              {/* Disputa por Bronce (3° Lugar) */}
+              <div className="bg-gradient-to-b from-orange-950/20 to-slate-950/80 border border-orange-500/40 rounded-2xl p-4 shadow-xl space-y-3">
+                <div className="flex items-center justify-between border-b border-orange-500/30 pb-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="w-5 h-5 rounded-full bg-orange-600 flex items-center justify-center text-white font-black text-[10px] shadow">
+                      3°
+                    </span>
+                    <div>
+                      <span className="text-xs font-black uppercase tracking-wider text-orange-400 block">
+                        Disputa por Bronce (3° Lugar)
+                      </span>
+                      <span className="text-[10px] text-slate-400 block font-mono">
+                        2° Pool A vs Perdedor Pool B
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-xs font-mono font-black text-orange-400 px-2.5 py-1 rounded-lg bg-orange-500/20 border border-orange-500/40 shadow">
+                    🥉 BRONCE
+                  </span>
+                </div>
+                {doublePoolData.bronzeMatch && (
+                  <InteractiveMatchCard
+                    match={doublePoolData.bronzeMatch}
+                    isEditMode={isEditMode}
+                    selectedForSwap={selectedForSwap}
+                    onSelectSlot={handleSelectSlotForSwap}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -438,6 +774,29 @@ export function BracketViewer({
           ))}
         </div>
       )}
+
+      {/* CASO 4: CATEGORÍA DE 1 COMPETIDOR (CAMPEÓN DIRECTO SIN CONTENDOR) */}
+      {bracket_type === 'UNCONTESTED' && (
+        <div className="bg-slate-950/80 border border-emerald-500/40 rounded-2xl p-6 max-w-xl mx-auto text-center space-y-4 shadow-xl">
+          <div className="w-16 h-16 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center mx-auto shadow-lg">
+            <Trophy className="w-8 h-8" />
+          </div>
+          <div className="space-y-1">
+            <span className="text-xs uppercase font-mono font-black text-amber-400 tracking-wider">
+              1° Lugar • Medalla de Oro
+            </span>
+            <h4 className="text-xl font-black text-white">
+              {matches[0]?.white_athlete_name || 'Competidor'}
+            </h4>
+            <p className="text-xs text-slate-400 font-medium">
+              {matches[0]?.white_club_name || 'Club'}
+            </p>
+          </div>
+          <div className="p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-xl text-xs text-emerald-300">
+            Único competidor presentado en la categoría. Campeón declarado automáticamente sin contendor.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -462,9 +821,35 @@ function InteractiveMatchCard({
     club?: string
   ) => void;
 }) {
+  const sanitizeAthleteName = (name: string | null | undefined): string => {
+    if (!name) return 'Por definir';
+    const trimmed = name.trim();
+    if (trimmed === '—' || trimmed === '-') return '-';
+    const lower = trimmed.toLowerCase();
+    if (
+      lower.includes('lugar') ||
+      lower.includes('perdedor') ||
+      lower.includes('ganador') ||
+      lower.includes('semifinal') ||
+      lower.includes('cuartos')
+    ) {
+      return 'Por definir';
+    }
+    return trimmed;
+  };
+
+  const whiteDisplayName = sanitizeAthleteName(match.white_athlete_name);
+  const blueDisplayName = sanitizeAthleteName(match.blue_athlete_name);
+
+  const isWhiteEmpty = whiteDisplayName === '-';
+  const isBlueEmpty = blueDisplayName === '-';
+
   const isBye =
-    match.white_athlete_name.includes('Bye') ||
-    match.blue_athlete_name.includes('Bye');
+    match.is_bye ||
+    isWhiteEmpty ||
+    isBlueEmpty ||
+    match.white_athlete_name?.includes('Bye') ||
+    match.blue_athlete_name?.includes('Bye');
 
   const isWhiteSelected =
     selectedForSwap?.matchId === match.id && selectedForSwap?.slot === 'WHITE';
@@ -480,7 +865,9 @@ function InteractiveMatchCard({
         </span>
         <span
           className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-            match.status === 'SCHEDULED'
+            isBye
+              ? 'bg-slate-800 text-slate-400 border border-slate-700'
+              : match.status === 'SCHEDULED'
               ? 'bg-blue-950 text-blue-400 border border-blue-900'
               : match.status === 'PENDING'
               ? 'bg-slate-800 text-slate-400 border border-slate-700'
@@ -489,7 +876,7 @@ function InteractiveMatchCard({
               : 'bg-slate-800 text-slate-400'
           }`}
         >
-          {match.status === 'PENDING' ? 'EN ESPERA' : match.status}
+          {isBye ? 'PASE DIRECTO' : match.status === 'PENDING' ? 'EN ESPERA' : match.status}
         </span>
       </div>
 
@@ -500,7 +887,7 @@ function InteractiveMatchCard({
             onSelectSlot(
               match.id,
               'WHITE',
-              match.white_athlete_name,
+              whiteDisplayName,
               match.white_athlete_id,
               match.white_club_name
             );
@@ -515,12 +902,20 @@ function InteractiveMatchCard({
         }`}
       >
         <div className="flex items-center space-x-2 truncate">
-          <span className="w-2.5 h-2.5 rounded-full bg-white shadow flex-shrink-0" />
+          <span className={`w-2.5 h-2.5 rounded-full shadow flex-shrink-0 ${isWhiteEmpty ? 'bg-slate-700' : 'bg-white'}`} />
           <div className="truncate">
-            <span className="text-xs font-bold text-white block truncate">
-              {match.white_athlete_name}
+            <span
+              className={`text-xs block truncate ${
+                isWhiteEmpty
+                  ? 'text-slate-500 font-normal'
+                  : whiteDisplayName === 'Por definir'
+                  ? 'text-slate-400 font-medium'
+                  : 'font-bold text-white'
+              }`}
+            >
+              {whiteDisplayName}
             </span>
-            {match.white_club_name && (
+            {match.white_club_name && whiteDisplayName !== 'Por definir' && !isWhiteEmpty && (
               <span className="text-[10px] text-slate-400 block truncate">
                 {match.white_club_name}
               </span>
@@ -554,7 +949,7 @@ function InteractiveMatchCard({
             onSelectSlot(
               match.id,
               'BLUE',
-              match.blue_athlete_name,
+              blueDisplayName,
               match.blue_athlete_id,
               match.blue_club_name
             );
@@ -569,12 +964,20 @@ function InteractiveMatchCard({
         }`}
       >
         <div className="flex items-center space-x-2 truncate">
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shadow flex-shrink-0" />
+          <span className={`w-2.5 h-2.5 rounded-full shadow flex-shrink-0 ${isBlueEmpty ? 'bg-slate-700' : 'bg-blue-600'}`} />
           <div className="truncate">
-            <span className="text-xs font-bold text-white block truncate">
-              {match.blue_athlete_name}
+            <span
+              className={`text-xs block truncate ${
+                isBlueEmpty
+                  ? 'text-slate-500 font-normal'
+                  : blueDisplayName === 'Por definir'
+                  ? 'text-slate-400 font-medium'
+                  : 'font-bold text-white'
+              }`}
+            >
+              {blueDisplayName}
             </span>
-            {match.blue_club_name && (
+            {match.blue_club_name && blueDisplayName !== 'Por definir' && !isBlueEmpty && (
               <span className="text-[10px] text-slate-400 block truncate">
                 {match.blue_club_name}
               </span>
@@ -598,7 +1001,7 @@ function InteractiveMatchCard({
 
       {isBye && (
         <div className="text-[10px] text-center text-emerald-400 font-mono font-bold bg-emerald-950/40 rounded py-0.5 border border-emerald-900/60">
-          Pase Directo (Bye)
+          Pase directo
         </div>
       )}
     </div>

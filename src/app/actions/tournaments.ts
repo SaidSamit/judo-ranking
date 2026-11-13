@@ -1,13 +1,11 @@
 // ==============================================================================
-// SERVER ACTIONS: GESTIÓN DE CAMPEONATOS E INYECCIÓN DE DEPORTISTAS
+// SERVER ACTIONS: GESTIÓN DE CAMPEONATOS OFICIALES
 // ==============================================================================
 //
 // REGLAS Y OBJETIVOS:
 // 1. Permite crear campeonatos con configuración de tatamis y fechas oficiales.
-// 2. Inyección de Atletas: Permite asociar masivamente los deportistas ingresados
-//    en el sistema al campeonato creado, creando las categorías necesarias en la DB.
-// 3. Aprovisionamiento automático de estaciones y PINs para cada tatami.
-// 4. Conmutación reactiva de torneo activo.
+// 2. Aprovisionamiento automático de estaciones y PINs para cada tatami.
+// 3. Conmutación reactiva de torneo activo.
 //
 // ==============================================================================
 
@@ -16,9 +14,6 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { confirmRegistrationsAction, DraftAthletePayload } from '@/app/actions/registrations';
-import { BASE_ATHLETES_ROSTER } from '@/lib/data/roster-data';
-import { getAvailableCategoriesForAthlete } from '@/lib/rules/judo-categories';
 
 export interface TournamentItem {
   id: string;
@@ -40,25 +35,10 @@ export interface CreateTournamentInput {
   start_date?: string;
   end_date?: string;
   tatami_count: number;
-  injectExistingAthletes?: boolean;
 }
 
-// Almacén en memoria de respaldo para torneos
-let inMemoryTournaments: TournamentItem[] = [
-  {
-    id: 'e0000000-0000-0000-0000-000000000001',
-    name: 'Torneo Regional Iquique Open 2026',
-    status: 'ACTIVE',
-    location: 'Polideportivo Central Iquique',
-    start_date: new Date().toISOString().split('T')[0],
-    end_date: new Date().toISOString().split('T')[0],
-    tatami_count: 3,
-    athlete_count: 8,
-    categories_count: 4,
-    is_active: true,
-    created_at: new Date().toISOString(),
-  },
-];
+// Almacén en memoria de respaldo para torneos de la sesión actual
+let inMemoryTournaments: TournamentItem[] = [];
 
 /**
  * Obtiene la lista completa de campeonatos registrados.
@@ -100,8 +80,8 @@ export async function getTournamentsAction(): Promise<{
           start_date: t.start_date,
           end_date: t.end_date,
           tatami_count: config.tatami_count || 3,
-          athlete_count: athleteCount > 0 ? athleteCount : (config.injected_athletes_count || 0),
-          categories_count: categoriesCount > 0 ? categoriesCount : (config.categories_count || 1),
+          athlete_count: athleteCount,
+          categories_count: categoriesCount,
           is_active: t.status === 'ACTIVE',
           created_at: t.created_at,
         };
@@ -117,34 +97,18 @@ export async function getTournamentsAction(): Promise<{
         activeTournamentId: active,
       };
     } else if (!tourError && (!tournamentsData || tournamentsData.length === 0)) {
-      // Si la base de datos no tiene torneos, persistimos el torneo inicial en Supabase
-      const defaultTour = inMemoryTournaments[0];
-      const nowIso = new Date().toISOString();
-      await supabase.from('tournaments').upsert(
-        {
-          id: defaultTour.id,
-          organization_id: 'a0000000-0000-0000-0000-000000000001',
-          name: defaultTour.name,
-          status: 'ACTIVE',
-          location: defaultTour.location,
-          start_date: defaultTour.start_date,
-          end_date: defaultTour.end_date,
-          config: {
-            tatami_count: defaultTour.tatami_count,
-            score_types: ['IPPON', 'WAZA_ARI', 'YUKO'],
-            best_of_limit: 6,
-          },
-          created_at: nowIso,
-          updated_at: nowIso,
-        },
-        { onConflict: 'id' }
-      );
+      inMemoryTournaments = [];
+      return {
+        success: true,
+        tournaments: [],
+        activeTournamentId: '',
+      };
     }
   } catch (err) {
     console.warn('Operando con respaldo en memoria de torneos:', err);
   }
 
-  const activeId = inMemoryTournaments.find((t) => t.is_active)?.id || inMemoryTournaments[0].id;
+  const activeId = inMemoryTournaments.find((t) => t.is_active)?.id || inMemoryTournaments[0]?.id || '';
   return {
     success: true,
     tournaments: inMemoryTournaments,
@@ -196,6 +160,8 @@ export async function createTournamentAction(
       station_slug: slug,
       station_name: stationName,
       pin,
+      type: 'TATAMI_TABLE',
+      metadata: {},
       created_at: nowIso,
     });
 
@@ -204,21 +170,63 @@ export async function createTournamentAction(
       organization_id: organizationId,
       name: stationName,
       slug,
-      type: 'TATAMI_TABLE',
+      type: 'TATAMI_TABLE' as const,
       tatami_number: i,
       pin_code: pin,
       pin_hash: pinHash,
+      metadata: {},
       is_active: true,
       updated_at: nowIso,
     });
   }
 
-  // Inyección de deportistas seleccionada desde la base de datos
-  let athletesToInject: DraftAthletePayload[] = [];
-  if (input.injectExistingAthletes) {
-    athletesToInject = await resolveExistingAthletesForTournament(organizationId);
+  // Generar estaciones de pesaje predeterminadas (Varones, Damas y General)
+  const weighInStationsConfig = [
+    {
+      slug: 'pesaje-varones',
+      name: 'Estación de Pesaje - Varones',
+      metadata: { gender_filter: 'M' },
+    },
+    {
+      slug: 'pesaje-damas',
+      name: 'Estación de Pesaje - Damas',
+      metadata: { gender_filter: 'F' },
+    },
+    {
+      slug: 'pesaje-general',
+      name: 'Estación de Pesaje - General',
+      metadata: {},
+    },
+  ];
+
+  for (const wStation of weighInStationsConfig) {
+    const pin = crypto.randomInt(100000, 1000000).toString();
+    const pinHash = await bcrypt.hash(pin, 10);
+
+    credentialsList.push({
+      tatami_number: null,
+      station_slug: wStation.slug,
+      station_name: wStation.name,
+      pin,
+      type: 'WEIGH_IN',
+      metadata: wStation.metadata,
+      created_at: nowIso,
+    });
+
+    stationUpserts.push({
+      tournament_id: newId,
+      organization_id: organizationId,
+      name: wStation.name,
+      slug: wStation.slug,
+      type: 'WEIGH_IN' as const,
+      tatami_number: null,
+      pin_code: pin,
+      pin_hash: pinHash,
+      metadata: wStation.metadata,
+      is_active: true,
+      updated_at: nowIso,
+    });
   }
-  const injectedCount = athletesToInject.length;
 
   const newTournament: TournamentItem = {
     id: newId,
@@ -228,8 +236,8 @@ export async function createTournamentAction(
     start_date: startDate,
     end_date: endDate,
     tatami_count: tatamiCount,
-    athlete_count: injectedCount,
-    categories_count: injectedCount > 0 ? 4 : 0,
+    athlete_count: 0,
+    categories_count: 0,
     is_active: true,
     created_at: nowIso,
   };
@@ -258,7 +266,6 @@ export async function createTournamentAction(
         tatami_count: tatamiCount,
         credentials_generated_at: nowIso,
         tatami_credentials: credentialsList,
-        injected_athletes_count: injectedCount,
         score_types: ['IPPON', 'WAZA_ARI', 'YUKO'],
         best_of_limit: 6,
       },
@@ -268,19 +275,21 @@ export async function createTournamentAction(
       console.warn('Error insertando torneo en Supabase:', tourError.message);
     }
 
-    // 3. Upsert estaciones físicas vinculadas al nuevo torneo
-    const { error: stationErr } = await supabase.from('stations').upsert(stationUpserts);
+    // 3. Upsert estaciones físicas vinculadas al nuevo torneo (tatamis + pesajes)
+    let { error: stationErr } = await supabase
+      .from('stations')
+      .upsert(stationUpserts, { onConflict: 'tournament_id,slug' });
+
     if (stationErr && stationErr.message.includes('column')) {
-      // Fallback de compatibilidad si la migración de columnas aún no se ha ejecutado en Supabase
-      const legacyUpserts = stationUpserts.map(({ tournament_id, pin_code, ...rest }) => rest);
-      await supabase.from('stations').upsert(legacyUpserts, {
-        onConflict: 'organization_id,slug',
-      });
+      const fallbackUpserts = stationUpserts.map(({ metadata, ...rest }) => rest);
+      const { error: retryErr } = await supabase
+        .from('stations')
+        .upsert(fallbackUpserts, { onConflict: 'tournament_id,slug' });
+      stationErr = retryErr;
     }
 
-    // 4. Si se solicitó inyección de atletas, ejecutamos la confirmación relacional de los atletas reales
-    if (input.injectExistingAthletes && athletesToInject.length > 0) {
-      await confirmRegistrationsAction(athletesToInject, organizationId, newId);
+    if (stationErr) {
+      console.warn('Aviso insertando estaciones en Supabase:', stationErr.message);
     }
   } catch (dbErr) {
     console.warn('Operando con respaldo seguro de memoria:', dbErr);
@@ -288,141 +297,10 @@ export async function createTournamentAction(
 
   return {
     success: true,
-    message: `Campeonato "${input.name.trim()}" creado exitosamente.${
-      injectedCount > 0
-        ? ` Se inyectaron ${injectedCount} deportistas de la organización a sus categorías.`
-        : ''
-    }`,
+    message: `Campeonato "${input.name.trim()}" creado exitosamente.`,
     tournament: newTournament,
-    injectedAthletesCount: injectedCount,
+    injectedAthletesCount: 0,
   };
-}
-
-/**
- * Consulta los atletas existentes de la organización en la base de datos
- * y los mapea con sus categorías sugeridas según su edad y género.
- */
-async function resolveExistingAthletesForTournament(
-  organizationId: string
-): Promise<DraftAthletePayload[]> {
-  try {
-    const supabase = createAdminClient();
-
-    // 1. Consultar todos los atletas registrados en la organización
-    const { data: dbAthletes, error } = await supabase
-      .from('athletes')
-      .select(`
-        id,
-        rut_dni,
-        first_name,
-        last_name,
-        gender,
-        birth_date,
-        club:clubs (
-          name
-        )
-      `)
-      .eq('organization_id', organizationId);
-
-    if (error || !dbAthletes || dbAthletes.length === 0) {
-      return BASE_ATHLETES_ROSTER;
-    }
-
-    // 2. Consultar inscripciones previas para reutilizar categorías habituales
-    const { data: recentRegs } = await supabase
-      .from('tournament_registrations')
-      .select(`
-        athlete_id,
-        category:categories (
-          name
-        )
-      `)
-      .order('created_at', { ascending: false });
-
-    const athleteCategoryMap = new Map<string, string>();
-    (recentRegs || []).forEach((reg: any) => {
-      if (reg.athlete_id && reg.category?.name && !athleteCategoryMap.has(reg.athlete_id)) {
-        athleteCategoryMap.set(reg.athlete_id, reg.category.name);
-      }
-    });
-
-    const currentYear = new Date().getFullYear();
-
-    return dbAthletes.map((ath: any) => {
-      const birthYear = ath.birth_date ? new Date(ath.birth_date).getFullYear() : 2008;
-      const gender = (ath.gender as 'M' | 'F') || 'M';
-      const clubName =
-        ath.club?.name || (Array.isArray(ath.club) ? ath.club[0]?.name : 'Independiente');
-
-      let categoryName = athleteCategoryMap.get(ath.id);
-      if (!categoryName) {
-        const catInfo = getAvailableCategoriesForAthlete(birthYear, gender, currentYear);
-        categoryName =
-          catInfo.categories[0] ||
-          (gender === 'F' ? 'Senior Femenino -52kg' : 'Senior Masculino -66kg');
-      }
-
-      return {
-        id: ath.id,
-        name: `${ath.first_name} ${ath.last_name}`.trim(),
-        club_name: clubName,
-        category: categoryName,
-        rut_dni: ath.rut_dni,
-        gender: gender,
-        birth_year: birthYear,
-        birth_date: ath.birth_date,
-      };
-    });
-  } catch (err) {
-    console.warn('[resolveExistingAthletesForTournament] Error, usando respaldo:', err);
-    return BASE_ATHLETES_ROSTER;
-  }
-}
-
-/**
- * Inyecta una nómina de deportistas a un campeonato específico.
- */
-export async function injectAthletesToTournamentAction(
-  tournamentId: string,
-  athletesToInject?: DraftAthletePayload[],
-  organizationId: string = 'a0000000-0000-0000-0000-000000000001'
-): Promise<{ success: boolean; count: number; message: string }> {
-  if (!tournamentId) {
-    return { success: false, count: 0, message: 'ID de campeonato inválido.' };
-  }
-
-  try {
-    const list =
-      athletesToInject && athletesToInject.length > 0
-        ? athletesToInject
-        : await resolveExistingAthletesForTournament(organizationId);
-
-    const res = await confirmRegistrationsAction(list, organizationId, tournamentId);
-
-    // Actualizar memoria
-    inMemoryTournaments = inMemoryTournaments.map((t) =>
-      t.id === tournamentId
-        ? {
-            ...t,
-            athlete_count: (t.athlete_count || 0) + res.count,
-            categories_count: Math.max(t.categories_count || 1, 4),
-          }
-        : t
-    );
-
-    return {
-      success: true,
-      count: res.count,
-      message: `Se inyectaron ${res.count} deportistas correctamente al campeonato.`,
-    };
-  } catch (err: any) {
-    console.warn('Error inyectando en Supabase, aplicando a memoria:', err);
-    return {
-      success: true,
-      count: 0,
-      message: `Error al inyectar deportistas: ${err.message}`,
-    };
-  }
 }
 
 /**
@@ -555,6 +433,114 @@ export async function getActiveTournamentSummaryAction(): Promise<{
   }
 
   return null;
+}
+
+/**
+ * Valida el PIN de un Tatami para vincular un televisor o pantalla independiente (Smart TV)
+ * a su campeonato específico sin requerir que esté marcado como 'ACTIVE'.
+ */
+export async function bindScoreboardTatamiAction(params: {
+  tatamiNumber: number;
+  pin: string;
+}): Promise<{
+  success: boolean;
+  message?: string;
+  tournamentId?: string;
+  tournamentName?: string;
+}> {
+  const { tatamiNumber, pin } = params;
+  const cleanPin = (pin || '').trim();
+
+  if (!cleanPin || cleanPin.length < 4) {
+    return {
+      success: false,
+      message: 'Ingresa un PIN numérico válido (mínimo 4 dígitos).',
+    };
+  }
+
+  try {
+    const supabase = createAdminClient();
+
+    // 1. Buscar en la tabla stations todas las mesas con ese tatami_number
+    const { data: stations, error: stErr } = await supabase
+      .from('stations')
+      .select('id, tournament_id, name, slug, tatami_number, pin_hash, pin_code, is_active')
+      .eq('tatami_number', tatamiNumber)
+      .eq('type', 'TATAMI_TABLE')
+      .eq('is_active', true);
+
+    let matchedTourId: string | null = null;
+
+    if (stations && stations.length > 0) {
+      for (const st of stations) {
+        let isMatch = false;
+        if (st.pin_hash) {
+          try {
+            isMatch = await bcrypt.compare(cleanPin, st.pin_hash);
+          } catch {
+            isMatch = false;
+          }
+          if (!isMatch && st.pin_hash === cleanPin) isMatch = true;
+        }
+        if (!isMatch && st.pin_code && st.pin_code === cleanPin) {
+          isMatch = true;
+        }
+
+        if (isMatch && st.tournament_id) {
+          matchedTourId = st.tournament_id;
+          break;
+        }
+      }
+    }
+
+    // 2. Fallback a tournaments.config si no hubo match directo en stations
+    if (!matchedTourId) {
+      const { data: tours } = await supabase
+        .from('tournaments')
+        .select('id, name, config')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      for (const t of tours || []) {
+        const creds = (t.config as any)?.tatami_credentials || [];
+        const matchCred = creds.find(
+          (c: any) =>
+            c.tatami_number === tatamiNumber &&
+            (c.pin === cleanPin || c.pin_hash === cleanPin)
+        );
+        if (matchCred) {
+          matchedTourId = t.id;
+          break;
+        }
+      }
+    }
+
+    if (matchedTourId) {
+      const { data: tour } = await supabase
+        .from('tournaments')
+        .select('id, name')
+        .eq('id', matchedTourId)
+        .maybeSingle();
+
+      return {
+        success: true,
+        tournamentId: matchedTourId,
+        tournamentName: tour?.name || 'Campeonato Oficial',
+        message: `Televisor vinculado exitosamente a ${tour?.name || 'Campeonato'} - Tatami ${tatamiNumber}.`,
+      };
+    }
+  } catch (err: any) {
+    console.error('[bindScoreboardTatamiAction] Error:', err);
+    return {
+      success: false,
+      message: 'Error verificando el PIN de la mesa en el servidor.',
+    };
+  }
+
+  return {
+    success: false,
+    message: `PIN incorrecto para Tatami #${tatamiNumber}. Consulta la ficha de credenciales del Director.`,
+  };
 }
 
 

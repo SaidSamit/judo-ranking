@@ -17,7 +17,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   Trophy,
   ChevronLeft,
@@ -26,9 +26,12 @@ import {
   X,
   Shield,
   LogOut,
-  ArrowLeft,
   ExternalLink,
   Layers,
+  Users,
+  Scale,
+  KeyRound,
+  Swords,
 } from 'lucide-react';
 
 interface NavItem {
@@ -47,6 +50,7 @@ interface NavSection {
 
 export function AdminSidebar() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -66,10 +70,10 @@ export function AdminSidebar() {
     localStorage.setItem('judo_sidebar_collapsed', String(next));
   };
 
-  const isInsideTournament =
-    pathname.startsWith('/admin/tournaments/') && pathname !== '/admin/tournaments';
+  const tournamentIdMatch = pathname.match(/\/admin\/tournaments\/([^/?]+)/);
+  const currentTournamentId = tournamentIdMatch ? tournamentIdMatch[1] : null;
 
-  // Secciones de navegación del sidebar (Limpio y aislado por campeonato)
+  // Secciones de navegación del sidebar (Limpio y contextual por campeonato)
   const navSections: NavSection[] = [
     {
       title: 'Competición Oficial',
@@ -83,6 +87,45 @@ export function AdminSidebar() {
         },
       ],
     },
+    ...(currentTournamentId
+      ? [
+          {
+            title: 'Módulos del Torneo',
+            items: [
+              {
+                label: 'Inscripciones',
+                href: `/admin/tournaments/${currentTournamentId}?tab=roster`,
+                icon: Users,
+              },
+              {
+                label: 'Pesaje Oficial',
+                href: `/admin/tournaments/${currentTournamentId}?tab=weigh_in`,
+                icon: Scale,
+              },
+              {
+                label: 'Sorteo',
+                href: `/admin/tournaments/${currentTournamentId}?tab=brackets`,
+                icon: Swords,
+              },
+              {
+                label: 'Tatamis y PINs',
+                href: `/admin/tournaments/${currentTournamentId}?tab=credentials`,
+                icon: KeyRound,
+              },
+              {
+                label: 'Monitor Tatamis',
+                href: `/admin/tournaments/${currentTournamentId}?tab=tatamis`,
+                icon: Layers,
+              },
+              {
+                label: 'Resultados / Podio',
+                href: `/admin/tournaments/${currentTournamentId}?tab=results`,
+                icon: Trophy,
+              },
+            ],
+          },
+        ]
+      : []),
   ];
 
   if (!mounted) return null;
@@ -174,14 +217,20 @@ export function AdminSidebar() {
               <div className="space-y-1">
                 {section.items.map((item) => {
                   const Icon = item.icon;
-                  const isActive =
-                    pathname === item.href ||
-                    pathname.startsWith(item.href);
+                  let isActive = false;
+                  if (item.href.includes('?tab=')) {
+                    const currentTab = searchParams.get('tab') || 'roster';
+                    const targetTab = item.href.split('?tab=')[1];
+                    isActive = pathname.startsWith(item.href.split('?')[0]) && currentTab === targetTab;
+                  } else {
+                    isActive = pathname === item.href;
+                  }
 
                   return (
                     <Link
                       key={item.href}
                       href={item.href}
+                      scroll={false}
                       target={item.isExternal ? '_blank' : undefined}
                       onClick={() => setIsMobileOpen(false)}
                       className={`group flex items-center justify-between rounded-xl px-3 py-2.5 text-xs font-bold transition-all ${
@@ -231,28 +280,6 @@ export function AdminSidebar() {
               </div>
             </div>
           ))}
-
-          {/* INDICADOR CONTEXTUAL: SI EL USUARIO ESTÁ GESTIONANDO UN CAMPEONATO */}
-          {isInsideTournament && !isCollapsed && (
-            <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-2xl space-y-2 mt-4">
-              <div className="flex items-center space-x-2 text-amber-400 text-xs font-black">
-                <Trophy className="w-3.5 h-3.5" />
-                <span>Modo Campeonato</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Nómina, pesaje, llaves de sorteo y tatamis están concentrados en las pestañas de este campeonato.
-              </p>
-              <div className="pt-1">
-                <Link
-                  href="/admin/tournaments"
-                  className="inline-flex items-center space-x-1.5 text-xs text-amber-400 hover:text-amber-300 font-bold transition"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Volver a Campeonatos</span>
-                </Link>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* PIE DEL SIDEBAR / PERFIL DE LA ESTACIÓN */}

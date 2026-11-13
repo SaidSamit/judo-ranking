@@ -121,7 +121,7 @@ export async function loginAdminAction(
     } else {
       return {
         success: false,
-        message: 'Credenciales inválidas. Usa usuario "admin" y clave "admin2026".',
+        message: 'Credenciales inválidas. Verifica tu usuario y contraseña.',
       };
     }
 
@@ -164,6 +164,16 @@ export async function logoutAdminAction(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete('judo_admin_role');
   cookieStore.delete('judo_admin_email');
+  redirect('/');
+}
+
+/**
+ * Cierra la sesión de estación eliminando las cookies de token.
+ */
+export async function logoutStationAction(): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.delete('station_token');
+  cookieStore.delete('tatami_session_slug');
   redirect('/');
 }
 
@@ -337,26 +347,7 @@ export async function loginTatamiAction(
       }
     }
   } catch (err) {
-    console.warn('Verificación en Supabase omitida por modo offline:', err);
-  }
-
-  // Respaldo exclusivamente para entorno de desarrollo local si se usa el PIN maestro '1234'
-  if (process.env.NODE_ENV !== 'production' && cleanPin === '1234') {
-    const cookieStore = await cookies();
-    cookieStore.set('tatami_session_slug', slug, {
-      httpOnly: true,
-      secure: false,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60,
-    });
-
-    return {
-      success: true,
-      tatamiNumber: candidateNumber,
-      redirectTo: `/tatami/${candidateNumber}`,
-      message: `Acceso concedido en modo desarrollo a Tatami #${candidateNumber}.`,
-    };
+    console.warn('Error verificando credenciales de estación en Supabase:', err);
   }
 
   return {

@@ -23,7 +23,7 @@
 //
 // ==============================================================================
 
-export type BracketType = 'BEST_OF_3' | 'ROUND_ROBIN' | 'SINGLE_ELIMINATION';
+export type BracketType = 'BEST_OF_3' | 'ROUND_ROBIN' | 'DOUBLE_POOL_5' | 'SINGLE_ELIMINATION' | 'UNCONTESTED';
 
 /**
  * Traduce y formatea códigos técnicos de rondas (QF, SF, FINAL, RR_R1, BEST_OF_3_M1, etc.)
@@ -38,6 +38,14 @@ export function formatRoundName(round: string | null | undefined): string {
   if (round.startsWith('Al Mejor de 3') || round.startsWith('Todos contra Todos')) {
     return round;
   }
+
+  // Doble Pool (5 Competidores IJF)
+  if (r === 'DP_POOL_A_M1') return 'Pool A - Combate 1';
+  if (r === 'DP_POOL_A_M2') return 'Pool A - Combate 2';
+  if (r === 'DP_POOL_A_M3') return 'Pool A - Combate 3';
+  if (r === 'DP_SEMI' || r === 'DP_POOL_B_M1') return 'Pool B - Semifinal Directa';
+  if (r === 'DP_BRONZE') return 'Disputa por Bronce (3° Lugar)';
+  if (r === 'DP_FINAL') return 'Gran Final (1° Lugar)';
 
   // Finales y Rondas Eliminatorias
   if (r === 'FINAL' || (r.startsWith('FINAL') && !r.includes('_'))) return 'Final';
@@ -115,6 +123,7 @@ export interface GenerateBracketOptions {
   tatami_number: number;
   match_duration_seconds?: number;
   start_match_number?: number; // Número inicial para la cola de combates del tatami
+  preferred_format_5?: 'ROUND_ROBIN' | 'DOUBLE_POOL_5';
 }
 
 export interface GeneratedMatch {
@@ -133,11 +142,12 @@ export interface GeneratedMatch {
   white_club_name?: string;
   blue_club_name?: string;
   winner_id: string | null;
-  status: 'SCHEDULED' | 'PENDING';
-  white_score: { ippon: 0; wazaari: 0; yuko: 0; shido: 0 };
-  blue_score: { ippon: 0; wazaari: 0; yuko: 0; shido: 0 };
-  current_match_time_seconds: 0;
-  is_golden_score: false;
+  status: 'SCHEDULED' | 'PENDING' | 'FINISHED' | 'WALKOVER';
+  white_score: { ippon: number; wazaari: number; yuko: number; shido: number };
+  blue_score: { ippon: number; wazaari: number; yuko: number; shido: number };
+  current_match_time_seconds: number;
+  is_golden_score: boolean;
+  is_bye?: boolean;
   // Enlaces de progresión para la llave
   next_match_id?: string | null;
   next_match_slot?: 'WHITE' | 'BLUE' | null;
@@ -168,6 +178,52 @@ function generateUUID(): string {
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+}
+
+// ==============================================================================
+// 0. MODALIDAD: UN SOLO COMPETIDOR (UNCONTESTED / SIN CONTENDOR) - N = 1
+// ==============================================================================
+
+function generateUncontested(
+  competitors: Competitor[],
+  opts: GenerateBracketOptions
+): BracketResult {
+  const c1 = competitors[0];
+  const startNum = opts.start_match_number || 1;
+  const match: GeneratedMatch = {
+    id: generateUUID(),
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum,
+    round: 'FINAL',
+    round_name: 'Campeón Directo (Sin Contendor)',
+    white_athlete_id: c1.id,
+    blue_athlete_id: null,
+    white_athlete_name: c1.name,
+    blue_athlete_name: 'Sin Contendor',
+    white_club_name: c1.club_name,
+    blue_club_name: '—',
+    winner_id: c1.id,
+    status: 'FINISHED',
+    white_score: { ippon: 1, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  };
+
+  return {
+    bracket_type: 'UNCONTESTED',
+    competitor_count: 1,
+    total_matches: 1,
+    matches: [match],
+    summary: {
+      description: '1 competidor en la categoría: Campeón declarado automáticamente sin contendor.',
+      rounds_count: 1,
+      byes_count: 0,
+    },
+  };
 }
 
 // ==============================================================================
@@ -206,7 +262,7 @@ function generateBestOf3(
     is_golden_score: false,
   });
 
-  // Combate 2: C2 (Blanco) vs C1 (Azul) - Alternancia de Judogi
+  // Combate 2: C1 (Blanco) vs C2 (Azul) - Se mantienen siempre los mismos colores
   matches.push({
     id: generateUUID(),
     organization_id: opts.organization_id,
@@ -216,12 +272,12 @@ function generateBestOf3(
     match_number: startNum + 1,
     round: 'BEST_OF_3_M2',
     round_name: 'Al Mejor de 3 - Combate 2',
-    white_athlete_id: c2.id,
-    blue_athlete_id: c1.id,
-    white_athlete_name: c2.name,
-    blue_athlete_name: c1.name,
-    white_club_name: c2.club_name,
-    blue_club_name: c1.club_name,
+    white_athlete_id: c1.id,
+    blue_athlete_id: c2.id,
+    white_athlete_name: c1.name,
+    blue_athlete_name: c2.name,
+    white_club_name: c1.club_name,
+    blue_club_name: c2.club_name,
     winner_id: null,
     status: 'SCHEDULED',
     white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -230,7 +286,7 @@ function generateBestOf3(
     is_golden_score: false,
   });
 
-  // Combate 3: C1 (Blanco) vs C2 (Azul) - Desempate condicional
+  // Combate 3: C1 (Blanco) vs C2 (Azul) - Desempate (mismos colores)
   matches.push({
     id: generateUUID(),
     organization_id: opts.organization_id,
@@ -260,7 +316,7 @@ function generateBestOf3(
     total_matches: matches.length,
     matches,
     summary: {
-      description: 'Modalidad al Mejor de 3: hasta 3 combates programados con rotación de color.',
+      description: 'Al Mejor de 3: hasta 3 combates programados.',
       rounds_count: 3,
       byes_count: 0,
     },
@@ -354,9 +410,198 @@ function generateRoundRobin(
     total_matches: matches.length,
     matches,
     summary: {
-      description: `Modalidad Round Robin (Berger): ${matches.length} cruces organizados en ${totalRounds} rondas con descanso balanceado.`,
+      description: `Modalidad Round Robin (Todos contra todos): ${matches.length} cruces organizados en ${totalRounds}.`,
       rounds_count: totalRounds,
       byes_count: isOdd ? 1 : 0,
+    },
+  };
+}
+
+// ==============================================================================
+// 2.1 MODALIDAD: DOBLE POOL IJF - N = 5 (3 EN POOL A + 2 EN POOL B CON FASE FINAL)
+// ==============================================================================
+
+function generateDoublePool5(
+  competitors: Competitor[],
+  opts: GenerateBracketOptions
+): BracketResult {
+  const startNum = opts.start_match_number || 1;
+
+  // Sembrado IJF:
+  // Si tienen seed (1 a 5), se ordenan por seed:
+  // - Pool A (3 atletas): Semillas impares #1, #3, #5
+  // - Pool B (2 atletas): Semillas pares #2, #4
+  // Si no tienen seed, se distribuyen aleatoriamente
+  const hasSeeds = competitors.some((c) => typeof c.seed === 'number' && c.seed > 0);
+  let sorted: Competitor[];
+  if (hasSeeds) {
+    sorted = [...competitors].sort((a, b) => (a.seed || 999) - (b.seed || 999));
+  } else {
+    sorted = [...competitors].sort(() => Math.random() - 0.5);
+  }
+
+  const poolA: Competitor[] = [sorted[0], sorted[2], sorted[4]];
+  const poolB: Competitor[] = [sorted[1], sorted[3]];
+
+  const matches: GeneratedMatch[] = [];
+
+  const bronzeMatchId = generateUUID();
+  const finalMatchId = generateUUID();
+
+  // Combate 1: Pool A - 1 vs 3
+  matches.push({
+    id: generateUUID(),
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum,
+    round: 'DP_POOL_A_M1',
+    round_name: 'Pool A - Combate 1',
+    white_athlete_id: poolA[0].id,
+    blue_athlete_id: poolA[1].id,
+    white_athlete_name: poolA[0].name,
+    blue_athlete_name: poolA[1].name,
+    white_club_name: poolA[0].club_name,
+    blue_club_name: poolA[1].club_name,
+    winner_id: null,
+    status: 'SCHEDULED',
+    white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  });
+
+  // Combate 2: Pool B - Semifinal Directa (2 vs 4)
+  // El ganador pasa a la Gran Final (Combate 6 - Blue)
+  // El perdedor pasa a la Disputa de Bronce (Combate 5 - Blue)
+  const semiMatchId = generateUUID();
+  matches.push({
+    id: semiMatchId,
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum + 1,
+    round: 'DP_SEMI',
+    round_name: 'Pool B - Semifinal Directa',
+    white_athlete_id: poolB[0].id,
+    blue_athlete_id: poolB[1].id,
+    white_athlete_name: poolB[0].name,
+    blue_athlete_name: poolB[1].name,
+    white_club_name: poolB[0].club_name,
+    blue_club_name: poolB[1].club_name,
+    winner_id: null,
+    status: 'SCHEDULED',
+    white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+    next_match_id: finalMatchId,
+    next_match_slot: 'BLUE',
+  });
+
+  // Combate 3: Pool A - 1 vs 5
+  matches.push({
+    id: generateUUID(),
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum + 2,
+    round: 'DP_POOL_A_M2',
+    round_name: 'Pool A - Combate 2',
+    white_athlete_id: poolA[0].id,
+    blue_athlete_id: poolA[2].id,
+    white_athlete_name: poolA[0].name,
+    blue_athlete_name: poolA[2].name,
+    white_club_name: poolA[0].club_name,
+    blue_club_name: poolA[2].club_name,
+    winner_id: null,
+    status: 'SCHEDULED',
+    white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  });
+
+  // Combate 4: Pool A - 3 vs 5
+  matches.push({
+    id: generateUUID(),
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum + 3,
+    round: 'DP_POOL_A_M3',
+    round_name: 'Pool A - Combate 3',
+    white_athlete_id: poolA[1].id,
+    blue_athlete_id: poolA[2].id,
+    white_athlete_name: poolA[1].name,
+    blue_athlete_name: poolA[2].name,
+    white_club_name: poolA[1].club_name,
+    blue_club_name: poolA[2].club_name,
+    winner_id: null,
+    status: 'SCHEDULED',
+    white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  });
+
+  // Combate 5: Disputa por Bronce (3° Lugar)
+  matches.push({
+    id: bronzeMatchId,
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum + 4,
+    round: 'DP_BRONZE',
+    round_name: 'Disputa por Bronce (3° Lugar)',
+    white_athlete_id: null,
+    blue_athlete_id: null,
+    white_athlete_name: 'Por definir',
+    blue_athlete_name: 'Por definir',
+    winner_id: null,
+    status: 'PENDING',
+    white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  });
+
+  // Combate 6: Gran Final (1° y 2° Lugar)
+  matches.push({
+    id: finalMatchId,
+    organization_id: opts.organization_id,
+    tournament_id: opts.tournament_id,
+    category_id: opts.category_id,
+    tatami_number: opts.tatami_number,
+    match_number: startNum + 5,
+    round: 'DP_FINAL',
+    round_name: 'Gran Final (1° Lugar)',
+    white_athlete_id: null,
+    blue_athlete_id: null,
+    white_athlete_name: 'Por definir',
+    blue_athlete_name: 'Por definir',
+    winner_id: null,
+    status: 'PENDING',
+    white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+    current_match_time_seconds: 0,
+    is_golden_score: false,
+  });
+
+  return {
+    bracket_type: 'DOUBLE_POOL_5',
+    competitor_count: 5,
+    total_matches: matches.length,
+    matches,
+    summary: {
+      description: 'Modalidad Pool Doble: Pool A (Round Robin de 3) y Pool B (Semifinal directa) con cruce a Final y Bronce.',
+      rounds_count: 4,
+      byes_count: 0,
     },
   };
 }
@@ -456,12 +701,44 @@ function generateSingleElimination(
       const slotB = currentRoundSlots[m * 2 + 1];
 
       // Caso Ronda 1 con BYE:
-      // Si uno de los dos es BYE (null) en la primera ronda, el competidor real avanza directo sin pelear
+      // Si uno de los dos es BYE (null) en la primera ronda, se representa en la misma línea
+      // con el competidor opuesto marcado como '-' y el atleta real avanza al cruce siguiente.
       if (r === 0 && (!slotA.athlete || !slotB.athlete)) {
         const advancingAthlete = slotA.athlete || slotB.athlete;
-        // Pasa automáticamente a la siguiente ronda
+        const matchId = generateUUID();
+        const isWhite = !!slotA.athlete;
+
+        const byeMatch: GeneratedMatch = {
+          id: matchId,
+          organization_id: opts.organization_id,
+          tournament_id: opts.tournament_id,
+          category_id: opts.category_id,
+          tatami_number: opts.tatami_number,
+          match_number: currentMatchNum++,
+          round: code,
+          round_name: `${name} - Combate #${m + 1}`,
+          white_athlete_id: isWhite && advancingAthlete ? advancingAthlete.id : null,
+          blue_athlete_id: !isWhite && advancingAthlete ? advancingAthlete.id : null,
+          white_athlete_name: isWhite && advancingAthlete ? advancingAthlete.name : '—',
+          blue_athlete_name: !isWhite && advancingAthlete ? advancingAthlete.name : '—',
+          white_club_name: isWhite ? advancingAthlete?.club_name : undefined,
+          blue_club_name: !isWhite ? advancingAthlete?.club_name : undefined,
+          winner_id: advancingAthlete ? advancingAthlete.id : null,
+          status: 'FINISHED',
+          white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+          blue_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
+          current_match_time_seconds: 0,
+          is_golden_score: false,
+          is_bye: true,
+        };
+
+        roundMatches.push(byeMatch);
+        allMatchesMap.set(matchId, byeMatch);
+
+        // Pasa automáticamente a la siguiente ronda guardando fromMatchId
         nextRoundSlots.push({
           athlete: advancingAthlete,
+          fromMatchId: matchId,
         });
         continue;
       }
@@ -553,8 +830,8 @@ function generateSingleElimination(
         round_name: 'Repechaje 1 (Cuadro Superior)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: 'Perdedor Cuartos #1',
-        blue_athlete_name: 'Perdedor Cuartos #2',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -576,8 +853,8 @@ function generateSingleElimination(
         round_name: 'Repechaje 2 (Cuadro Inferior)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: qfMatches.length >= 3 ? 'Perdedor Cuartos #3' : 'Perdedor Cuartos',
-        blue_athlete_name: qfMatches.length >= 4 ? 'Perdedor Cuartos #4' : 'Por definir',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -599,8 +876,8 @@ function generateSingleElimination(
         round_name: 'Disputa por Bronce A (3° Lugar)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: 'Perdedor Semifinal #2',
-        blue_athlete_name: 'Ganador Repechaje 1',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -622,8 +899,8 @@ function generateSingleElimination(
         round_name: 'Disputa por Bronce B (3° Lugar)',
         white_athlete_id: null,
         blue_athlete_id: null,
-        white_athlete_name: 'Perdedor Semifinal #1',
-        blue_athlete_name: 'Ganador Repechaje 2',
+        white_athlete_name: 'Por definir',
+        blue_athlete_name: 'Por definir',
         winner_id: null,
         status: 'PENDING',
         white_score: { ippon: 0, wazaari: 0, yuko: 0, shido: 0 },
@@ -681,17 +958,25 @@ export function generateCategoryBracket(
   competitors: Competitor[],
   options: GenerateBracketOptions
 ): BracketResult {
-  if (!competitors || competitors.length < 2) {
-    throw new Error('Se requieren al menos 2 competidores para generar un sorteo de llaves válido.');
+  if (!competitors || competitors.length < 1) {
+    throw new Error('Se requiere al menos 1 competidor para generar la categoría.');
   }
 
   const count = competitors.length;
   let result: BracketResult;
 
-  if (count === 2) {
+  if (count === 1) {
+    result = generateUncontested(competitors, options);
+  } else if (count === 2) {
     result = generateBestOf3(competitors, options);
-  } else if (count >= 3 && count <= 5) {
+  } else if (count >= 3 && count <= 4) {
     result = generateRoundRobin(competitors, options);
+  } else if (count === 5) {
+    if (options.preferred_format_5 === 'ROUND_ROBIN') {
+      result = generateRoundRobin(competitors, options);
+    } else {
+      result = generateDoublePool5(competitors, options);
+    }
   } else {
     result = generateSingleElimination(competitors, options);
   }
@@ -707,12 +992,15 @@ export function generateCategoryBracket(
 /**
  * Estima la cantidad de combates que producirá una categoría según la cantidad de competidores pesados.
  */
-export function estimateCategoryMatchesCount(athleteCount: number): number {
+export function estimateCategoryMatchesCount(
+  athleteCount: number,
+  preferredFormat5?: 'ROUND_ROBIN' | 'DOUBLE_POOL_5'
+): number {
   if (athleteCount <= 1) return 0;
   if (athleteCount === 2) return 3; // Best of 3
   if (athleteCount === 3) return 3; // Round Robin (3 cruces)
   if (athleteCount === 4) return 6; // Round Robin (6 cruces)
-  if (athleteCount === 5) return 10; // Round Robin (10 cruces)
+  if (athleteCount === 5) return preferredFormat5 === 'ROUND_ROBIN' ? 10 : 6;
   return athleteCount - 1; // Eliminación simple
 }
 
@@ -773,13 +1061,24 @@ export function sequenceTatamiMatches(
 
     // Seleccionar el mejor candidato:
     // 1. Menor peso de ronda (respetar la progresión del torneo)
-    // 2. Si el combate anterior era de la misma categoría, dar prioridad a una categoría diferente
-    // 3. Mayor tiempo de descanso acumulado para sus atletas
+    // 2. Si ambos combates son de la misma categoría, PRESERVAR estrictamente el orden estructural del cuadro
+    //    (ej: QF 1 -> QF 2 -> QF 3 -> QF 4; SF 1 antes de SF 2; Rep 1 antes de Rep 2; Bronce A antes de Bronce B)
+    // 3. Si son de categorías distintas, alternar y respetar tiempos de descanso acumulados
     candidates.sort((a, b) => {
       const weightA = getRoundWeight(a.round);
       const weightB = getRoundWeight(b.round);
       if (weightA !== weightB) {
         return weightA - weightB;
+      }
+
+      // Si ambos pertenecen a la misma categoría, conservar rigurosamente el orden de árbol
+      if (a.category_id === b.category_id) {
+        const origIdxA = matches.indexOf(a);
+        const origIdxB = matches.indexOf(b);
+        if (origIdxA !== -1 && origIdxB !== -1) {
+          return origIdxA - origIdxB;
+        }
+        return (a.match_number || 0) - (b.match_number || 0);
       }
 
       if (prevMatch) {
@@ -790,15 +1089,26 @@ export function sequenceTatamiMatches(
         }
       }
 
-      const lastA1 = a.white_athlete_id ? (lastFoughtAt.get(a.white_athlete_id) ?? -10) : -10;
-      const lastA2 = a.blue_athlete_id ? (lastFoughtAt.get(a.blue_athlete_id) ?? -10) : -10;
+      // Entre categorías distintas: priorizar combates con atletas ya definidos listos para combatir
+      const hasRealAthletesA = !!(a.white_athlete_id || a.blue_athlete_id);
+      const hasRealAthletesB = !!(b.white_athlete_id || b.blue_athlete_id);
+      if (hasRealAthletesA !== hasRealAthletesB) {
+        return hasRealAthletesA ? -1 : 1;
+      }
+
+      const lastA1 = a.white_athlete_id ? (lastFoughtAt.get(a.white_athlete_id) ?? -1) : -1;
+      const lastA2 = a.blue_athlete_id ? (lastFoughtAt.get(a.blue_athlete_id) ?? -1) : -1;
       const minRestA = Math.max(lastA1, lastA2);
 
-      const lastB1 = b.white_athlete_id ? (lastFoughtAt.get(b.white_athlete_id) ?? -10) : -10;
-      const lastB2 = b.blue_athlete_id ? (lastFoughtAt.get(b.blue_athlete_id) ?? -10) : -10;
+      const lastB1 = b.white_athlete_id ? (lastFoughtAt.get(b.white_athlete_id) ?? -1) : -1;
+      const lastB2 = b.blue_athlete_id ? (lastFoughtAt.get(b.blue_athlete_id) ?? -1) : -1;
       const minRestB = Math.max(lastB1, lastB2);
 
-      return minRestA - minRestB;
+      if (minRestA !== minRestB) {
+        return minRestA - minRestB;
+      }
+
+      return (a.match_number || 0) - (b.match_number || 0);
     });
 
     const chosen = candidates[0];

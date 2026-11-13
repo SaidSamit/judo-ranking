@@ -72,8 +72,14 @@ export async function finishMatchAndPropagateWinnerAction(
         round,
         white_athlete_id,
         blue_athlete_id,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         status,
         next_match_id,
         next_match_slot,
@@ -112,10 +118,10 @@ export async function finishMatchAndPropagateWinnerAction(
 
     const whiteName = whiteAth
       ? `${whiteAth.first_name} ${whiteAth.last_name}`.trim()
-      : 'Atleta Blanco';
+      : 'Judoka Blanco';
     const blueName = blueAth
       ? `${blueAth.first_name} ${blueAth.last_name}`.trim()
-      : 'Atleta Azul';
+      : 'Judoka Azul';
     const whiteClub =
       whiteAth?.club?.name ||
       (Array.isArray(whiteAth?.club) ? whiteAth.club[0]?.name : 'Independiente');
@@ -138,8 +144,18 @@ export async function finishMatchAndPropagateWinnerAction(
       ended_at: nowIso,
       updated_at: nowIso,
     };
-    if (whiteScore) matchUpdatePayload.white_score = whiteScore;
-    if (blueScore) matchUpdatePayload.blue_score = blueScore;
+    if (whiteScore) {
+      if (typeof whiteScore.ippon !== 'undefined') matchUpdatePayload.white_ippon = whiteScore.ippon;
+      if (typeof whiteScore.wazaari !== 'undefined') matchUpdatePayload.white_wazaari = whiteScore.wazaari;
+      if (typeof whiteScore.yuko !== 'undefined') matchUpdatePayload.white_yuko = whiteScore.yuko;
+      if (typeof whiteScore.shido !== 'undefined') matchUpdatePayload.white_shido = whiteScore.shido;
+    }
+    if (blueScore) {
+      if (typeof blueScore.ippon !== 'undefined') matchUpdatePayload.blue_ippon = blueScore.ippon;
+      if (typeof blueScore.wazaari !== 'undefined') matchUpdatePayload.blue_wazaari = blueScore.wazaari;
+      if (typeof blueScore.yuko !== 'undefined') matchUpdatePayload.blue_yuko = blueScore.yuko;
+      if (typeof blueScore.shido !== 'undefined') matchUpdatePayload.blue_shido = blueScore.shido;
+    }
 
     const { error: updateCurrentErr } = await supabase
       .from('matches')
@@ -205,79 +221,207 @@ export async function finishMatchAndPropagateWinnerAction(
     const catId = rawMatch?.category_id;
     const roundCode = (rawMatch?.round || '').toUpperCase();
 
-    if (loserId && catId && (roundCode === 'QF' || roundCode.startsWith('QF') || roundCode === 'SF' || roundCode.startsWith('SF'))) {
+    if (loserId && catId && (roundCode === 'QF' || roundCode.startsWith('QF') || roundCode === 'SF' || roundCode.startsWith('SF') || roundCode === 'DP_SEMI')) {
       try {
         if (roundCode === 'QF' || roundCode.startsWith('QF')) {
-          // Consultar los cuartos de esta categoría para conocer el orden de combate
-          const { data: qfMatches } = await supabase
+          // Obtener combates clave de la categoría para resolver la rama estructural (Rama A vs Rama B)
+          const { data: catMatches } = await supabase
             .from('matches')
-            .select('id, match_number')
+            .select('id, round, next_match_id, next_match_slot, white_athlete_id, blue_athlete_id, status, winner_id')
+            .eq('category_id', catId);
+
+          const sfMatches = (catMatches || []).filter((m) => (m.round || '').toUpperCase().startsWith('SF'));
+          const sf1 = sfMatches.find((m) => m.next_match_slot === 'WHITE') || sfMatches[0];
+          const sf2 = sfMatches.find((m) => m.next_match_slot === 'BLUE') || sfMatches[1];
+
+          // Determinar a qué rama pertenece este combate de cuartos según la semifinal que alimenta
+          const isRamaA = sf1 && rawMatch?.next_match_id === sf1.id;
+          const targetRepRound = isRamaA ? 'REPECHAGE_1' : 'REPECHAGE_2';
+          // El slot en repechaje replica el slot de entrada a semifinales
+          const targetSlot = rawMatch?.next_match_slot === 'WHITE' ? 'white_athlete_id' : 'blue_athlete_id';
+
+          // Detectar si el combate de cuartos opuesto en esta misma rama fue un BYE (sin rival)
+          const targetSF = isRamaA ? sf1 : sf2;
+          const oppositeQF = (catMatches || []).find(
+            (m) =>
+              (m.round || '').toUpperCase().startsWith('QF') &&
+              m.next_match_id === targetSF?.id &&
+              m.id !== rawMatch.id
+          );
+          const isOppositeQFBye = !oppositeQF || !oppositeQF.white_athlete_id || !oppositeQF.blue_athlete_id;
+
+          const { data: repMatch } = await supabase
+            .from('matches')
+            .select('id, white_athlete_id, blue_athlete_id, status, next_match_id, next_match_slot')
             .eq('category_id', catId)
-            .ilike('round', 'QF%')
-            .order('match_number', { ascending: true });
+            .eq('round', targetRepRound)
+            .maybeSingle();
 
-          if (qfMatches && qfMatches.length >= 2) {
-            const qfIndex = qfMatches.findIndex((m) => m.id === matchId);
-            // QF 0 y 1 van a REPECHAGE_1; QF 2 y 3 van a REPECHAGE_2
-            const targetRepRound = qfIndex < 2 ? 'REPECHAGE_1' : 'REPECHAGE_2';
-            const targetSlot = (qfIndex % 2 === 0) ? 'white_athlete_id' : 'blue_athlete_id';
+          if (repMatch) {
+            const repUpdate: Record<string, any> = {
+              [targetSlot]: loserId,
+              updated_at: nowIso,
+            };
+            const oppositeSlot = targetSlot === 'white_athlete_id' ? repMatch.blue_athlete_id : repMatch.white_athlete_id;
 
-            const { data: repMatch } = await supabase
-              .from('matches')
-              .select('id, white_athlete_id, blue_athlete_id, status')
-              .eq('category_id', catId)
-              .eq('round', targetRepRound)
-              .maybeSingle();
+            if (oppositeSlot) {
+              // Ambos judokas definidos: combate listo para disputarse
+              repUpdate.status = 'SCHEDULED';
+              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
+            } else if (isOppositeQFBye) {
+              // El combate opuesto fue un BYE (sin perdedor): el judoka gana automáticamente por BYE y avanza a Bronce
+              repUpdate.winner_id = loserId;
+              repUpdate.status = 'FINISHED';
+              repUpdate.win_reason = 'BYE';
+              await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
 
-            if (repMatch) {
-              const repUpdate: Record<string, any> = {
-                [targetSlot]: loserId,
-                updated_at: nowIso,
-              };
-              const oppositeSlot = targetSlot === 'white_athlete_id' ? repMatch.blue_athlete_id : repMatch.white_athlete_id;
-              if (oppositeSlot) {
-                repUpdate.status = 'SCHEDULED';
+              // Propagación directa hacia la disputa de Bronce
+              const targetBronzeRound = isRamaA ? 'BRONZE_1' : 'BRONZE_2';
+              const { data: bronzeMatch } = await supabase
+                .from('matches')
+                .select('id, white_athlete_id, blue_athlete_id, status')
+                .eq('category_id', catId)
+                .eq('round', targetBronzeRound)
+                .maybeSingle();
+
+              if (bronzeMatch) {
+                const bronzeUpdate: Record<string, any> = {
+                  blue_athlete_id: loserId,
+                  updated_at: nowIso,
+                };
+                if (bronzeMatch.white_athlete_id) {
+                  bronzeUpdate.status = 'SCHEDULED';
+                }
+                await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
               }
+            } else {
+              // Esperando que finalice el combate opuesto
               await supabase.from('matches').update(repUpdate).eq('id', repMatch.id);
             }
           }
         } else if (roundCode === 'SF' || roundCode.startsWith('SF')) {
-          // En Semifinales: Cruzar perdedores hacia el Bronce
-          // SF 1 loser -> BRONZE_2 (WHITE)
-          // SF 2 loser -> BRONZE_1 (WHITE)
-          const { data: sfMatches } = await supabase
+          // EN SEMIFINALES (REGLA OFICIAL IJF):
+          // El árbol principal nunca cruza pools. El ÚNICO cruce oficial es aquí:
+          // - El perdedor de Semifinal 1 (Rama A) cruza a Disputa por Bronce B (BRONZE_2) frente al ganador de Repechaje 2
+          // - El perdedor de Semifinal 2 (Rama B) cruza a Disputa por Bronce A (BRONZE_1) frente al ganador de Repechaje 1
+          const isSF1 = rawMatch?.next_match_slot === 'WHITE';
+          const targetBronzeRound = isSF1 ? 'BRONZE_2' : 'BRONZE_1';
+
+          const { data: bronzeMatch } = await supabase
             .from('matches')
-            .select('id, match_number')
+            .select('id, white_athlete_id, blue_athlete_id, status')
             .eq('category_id', catId)
-            .ilike('round', 'SF%')
-            .order('match_number', { ascending: true });
+            .eq('round', targetBronzeRound)
+            .maybeSingle();
 
-          if (sfMatches && sfMatches.length >= 2) {
-            const sfIndex = sfMatches.findIndex((m) => m.id === matchId);
-            // Si es SF 1 (index 0) va a BRONZE_2; si es SF 2 (index 1) va a BRONZE_1
-            const targetBronzeRound = sfIndex === 0 ? 'BRONZE_2' : 'BRONZE_1';
-
-            const { data: bronzeMatch } = await supabase
-              .from('matches')
-              .select('id, white_athlete_id, blue_athlete_id, status')
-              .eq('category_id', catId)
-              .eq('round', targetBronzeRound)
-              .maybeSingle();
-
-            if (bronzeMatch) {
-              const bronzeUpdate: Record<string, any> = {
-                white_athlete_id: loserId,
-                updated_at: nowIso,
-              };
-              if (bronzeMatch.blue_athlete_id) {
-                bronzeUpdate.status = 'SCHEDULED';
-              }
-              await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
+          if (bronzeMatch) {
+            const bronzeUpdate: Record<string, any> = {
+              white_athlete_id: loserId,
+              updated_at: nowIso,
+            };
+            if (bronzeMatch.blue_athlete_id) {
+              bronzeUpdate.status = 'SCHEDULED';
             }
+            await supabase.from('matches').update(bronzeUpdate).eq('id', bronzeMatch.id);
+          }
+        } else if (roundCode === 'DP_SEMI') {
+          // En Pool Doble: Perdedor de la Semifinal Directa va a DP_BRONZE (BLUE)
+          const { data: dpBronzeMatch } = await supabase
+            .from('matches')
+            .select('id, white_athlete_id, status')
+            .eq('category_id', catId)
+            .eq('round', 'DP_BRONZE')
+            .maybeSingle();
+
+          if (dpBronzeMatch) {
+            const bronzeUpdate: Record<string, any> = {
+              blue_athlete_id: loserId,
+              updated_at: nowIso,
+            };
+            if (dpBronzeMatch.white_athlete_id) {
+              bronzeUpdate.status = 'SCHEDULED';
+            }
+            await supabase.from('matches').update(bronzeUpdate).eq('id', dpBronzeMatch.id);
           }
         }
       } catch (loserErr) {
         console.warn('[finishMatch] Error propagando perdedor a repechaje/bronce:', loserErr);
+      }
+    }
+
+    // 4.2. PROPAGACIÓN POOL A EN POOL DOBLE (5 COMPETIDORES):
+    // Cuando finalizan los 3 combates del Pool A, 1° pasa a DP_FINAL y 2° pasa a DP_BRONZE
+    if (roundCode.startsWith('DP_POOL_A') && catId) {
+      try {
+        const { data: poolAMatches } = await supabase
+          .from('matches')
+          .select('id, round, status, winner_id, white_athlete_id, blue_athlete_id, white_ippon, white_wazaari, blue_ippon, blue_wazaari')
+          .eq('category_id', catId)
+          .ilike('round', 'DP_POOL_A%');
+
+        if (poolAMatches) {
+          const effMatches = poolAMatches.map((m) =>
+            m.id === matchId ? { ...m, status: 'FINISHED', winner_id: winnerId } : m
+          );
+          const allFinished = effMatches.every((m) => m.status === 'FINISHED');
+          if (allFinished) {
+            const stats = new Map<string, { wins: number; points: number }>();
+            effMatches.forEach((m) => {
+              if (m.white_athlete_id && !stats.has(m.white_athlete_id)) stats.set(m.white_athlete_id, { wins: 0, points: 0 });
+              if (m.blue_athlete_id && !stats.has(m.blue_athlete_id)) stats.set(m.blue_athlete_id, { wins: 0, points: 0 });
+              if (m.winner_id) {
+                const s = stats.get(m.winner_id);
+                if (s) {
+                  s.wins += 1;
+                  const pts = m.winner_id === m.white_athlete_id
+                    ? (m.white_ippon * 10 + m.white_wazaari * 7)
+                    : (m.blue_ippon * 10 + m.blue_wazaari * 7);
+                  s.points += pts || 10;
+                }
+              }
+            });
+
+            const sortedPoolA = Array.from(stats.entries()).sort((a, b) => {
+              if (b[1].wins !== a[1].wins) return b[1].wins - a[1].wins;
+              return b[1].points - a[1].points;
+            });
+
+            if (sortedPoolA.length >= 2) {
+              const firstPoolA = sortedPoolA[0][0];
+              const secondPoolA = sortedPoolA[1][0];
+
+              // 1° de Pool A va a DP_FINAL (WHITE)
+              const { data: finalM } = await supabase
+                .from('matches')
+                .select('id, blue_athlete_id')
+                .eq('category_id', catId)
+                .eq('round', 'DP_FINAL')
+                .maybeSingle();
+
+              if (finalM) {
+                const fUp: Record<string, any> = { white_athlete_id: firstPoolA, updated_at: nowIso };
+                if (finalM.blue_athlete_id) fUp.status = 'SCHEDULED';
+                await supabase.from('matches').update(fUp).eq('id', finalM.id);
+              }
+
+              // 2° de Pool A va a DP_BRONZE (WHITE)
+              const { data: bronzeM } = await supabase
+                .from('matches')
+                .select('id, blue_athlete_id')
+                .eq('category_id', catId)
+                .eq('round', 'DP_BRONZE')
+                .maybeSingle();
+
+              if (bronzeM) {
+                const bUp: Record<string, any> = { white_athlete_id: secondPoolA, updated_at: nowIso };
+                if (bronzeM.blue_athlete_id) bUp.status = 'SCHEDULED';
+                await supabase.from('matches').update(bUp).eq('id', bronzeM.id);
+              }
+            }
+          }
+        }
+      } catch (poolAErr) {
+        console.warn('[finishMatch] Error propagando clasificados de Pool A:', poolAErr);
       }
     }
 
@@ -386,6 +530,20 @@ export async function updateMatchStatusAction(
 }
 
 /**
+ * Actualiza la duración máxima oficial (match_duration_seconds) de un combate específico.
+ * Utilizado por la Mesa de Control cuando se ajusta el tiempo límite de un combate individual.
+ */
+export async function updateMatchDurationAction(
+  matchId: string,
+  durationSeconds: number
+): Promise<{ success: boolean; error?: string }> {
+  // La duración oficial reside en la tabla 'categories'.
+  // Las modificaciones individuales en la Mesa de Control son gestionadas localmente
+  // en IndexedDB y emitidas instantáneamente por Realtime Broadcast a los televisores.
+  return { success: true };
+}
+
+/**
  * Consulta un combate por su UUID específico para la mesa de control (ej: al hacer clic en "Llamar a Tatami").
  */
 export async function getMatchByIdAction(matchId: string): Promise<{
@@ -409,8 +567,14 @@ export async function getMatchByIdAction(matchId: string): Promise<{
         blue_athlete_id,
         next_match_id,
         next_match_slot,
-        white_score,
-        blue_score,
+        white_ippon,
+        white_wazaari,
+        white_yuko,
+        white_shido,
+        blue_ippon,
+        blue_wazaari,
+        blue_yuko,
+        blue_shido,
         current_match_time_seconds,
         category:categories (
           id,
