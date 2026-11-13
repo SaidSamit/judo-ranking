@@ -103,10 +103,14 @@ export async function loginAdminAction(
     }
 
     // 3. Validar perfil en la tabla profiles si tenemos usuario autenticado
+    let displayName = 'Director de Torneo';
+    let displayOrg = 'Asoc. Judo Tarapacá';
+    let initials = 'DT';
+
     if (authUser) {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role, organization_id')
+        .select('role, organization_id, first_name, last_name, email')
         .eq('id', authUser.id)
         .maybeSingle();
 
@@ -118,11 +122,44 @@ export async function loginAdminAction(
           message: 'Tu cuenta no posee permisos de Director o Administrador.',
         };
       }
+
+      if (profile?.organization_id) {
+        const { data: org } = await supabase
+          .from('organizations')
+          .select('name')
+          .eq('id', profile.organization_id)
+          .maybeSingle();
+        if (org?.name) {
+          displayOrg = org.name;
+        }
+      }
+
+      if (profile?.first_name || profile?.last_name) {
+        const fullName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
+        if (fullName && fullName.toLowerCase() !== 'director torneo') {
+          displayName = fullName;
+          initials = `${(profile.first_name || '')[0] || ''}${(profile.last_name || '')[0] || ''}`.toUpperCase() || 'DT';
+        }
+      }
     } else {
       return {
         success: false,
         message: 'Credenciales inválidas. Verifica tu usuario y contraseña.',
       };
+    }
+
+    if (displayName === 'Director de Torneo') {
+      if (rawUsername === 'admin' || rawUsername.startsWith('admin')) {
+        displayName = 'Administrador General';
+        initials = 'AG';
+      } else if (rawUsername === 'comision' || rawUsername.startsWith('comision')) {
+        displayName = 'Comisión Técnica';
+        initials = 'CT';
+      } else if (rawUsername !== 'director' && rawUsername !== 'judo') {
+        const prefix = rawUsername.split('@')[0];
+        displayName = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+        initials = prefix.slice(0, 2).toUpperCase();
+      }
     }
 
     // 4. Establecer cookie de sesión de administración
@@ -143,6 +180,30 @@ export async function loginAdminAction(
       maxAge: 7 * 24 * 60 * 60,
     });
 
+    cookieStore.set('judo_admin_name', displayName, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60,
+    });
+
+    cookieStore.set('judo_admin_org', displayOrg, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60,
+    });
+
+    cookieStore.set('judo_admin_initials', initials, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60,
+    });
+
     return {
       success: true,
       message: 'Sesión de Director iniciada correctamente.',
@@ -157,6 +218,52 @@ export async function loginAdminAction(
   }
 }
 
+export interface AdminUserProfile {
+  email: string;
+  role: string;
+  name: string;
+  organization: string;
+  initials: string;
+}
+
+/**
+ * Obtiene el perfil de sesión del usuario administrador actual desde cookies / Supabase
+ */
+export async function getAdminSessionProfileAction(): Promise<AdminUserProfile> {
+  const cookieStore = await cookies();
+  const role = cookieStore.get('judo_admin_role')?.value || 'DIRECTOR';
+  const email = cookieStore.get('judo_admin_email')?.value || 'director@judo.cl';
+  let name = cookieStore.get('judo_admin_name')?.value;
+  let organization = cookieStore.get('judo_admin_org')?.value;
+  let initials = cookieStore.get('judo_admin_initials')?.value;
+
+  if (!name || !organization || !initials) {
+    const rawUser = email.split('@')[0].toLowerCase();
+    if (rawUser === 'admin') {
+      name = name || 'Administrador General';
+      initials = initials || 'AG';
+    } else if (rawUser === 'comision') {
+      name = name || 'Comisión Técnica';
+      initials = initials || 'CT';
+    } else if (rawUser === 'director') {
+      name = name || 'Director de Torneo';
+      initials = initials || 'DT';
+    } else {
+      name = name || (rawUser.charAt(0).toUpperCase() + rawUser.slice(1));
+      initials = initials || rawUser.slice(0, 2).toUpperCase();
+    }
+    organization = organization || 'Asoc. Judo Tarapacá';
+  }
+
+  return {
+    email,
+    role,
+    name,
+    organization,
+    initials,
+  };
+}
+
 /**
  * Cierra la sesión de administración eliminando las cookies del navegador.
  */
@@ -164,6 +271,9 @@ export async function logoutAdminAction(): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.delete('judo_admin_role');
   cookieStore.delete('judo_admin_email');
+  cookieStore.delete('judo_admin_name');
+  cookieStore.delete('judo_admin_org');
+  cookieStore.delete('judo_admin_initials');
   redirect('/');
 }
 

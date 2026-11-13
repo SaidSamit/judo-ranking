@@ -166,9 +166,12 @@ export function TournamentBracketsTab({
 
   const nextUngeneratedCategory = useMemo(() => {
     if (!activeCategory) return null;
-    const afterCurrent = navList.slice(Math.max(0, activeIndex + 1)).find((c) => !c.matches_generated);
+    // Solo elegible si no está sorteada Y tiene al menos 1 judoka con pesaje aprobado
+    const isEligible = (c: CategoryBracketStatus) =>
+      !c.matches_generated && (c.passed_weigh_in || 0) > 0;
+    const afterCurrent = navList.slice(Math.max(0, activeIndex + 1)).find(isEligible);
     if (afterCurrent) return afterCurrent;
-    return navList.find((c) => !c.matches_generated && c.id !== activeCategory.id) || null;
+    return navList.find((c) => isEligible(c) && c.id !== activeCategory.id) || null;
   }, [navList, activeIndex, activeCategory]);
 
   // 3. Judokas inscritos en la categoría activa + candidatos disponibles del torneo
@@ -483,7 +486,7 @@ export function TournamentBracketsTab({
                         type="button"
                         onClick={() => handleSelectCategory(nextUngeneratedCategory.id)}
                         className="px-2.5 py-1 rounded-lg bg-blue-950/80 hover:bg-blue-900 text-blue-300 border border-blue-800/80 text-[11px] font-bold transition flex items-center space-x-1"
-                        title={`Saltar a: ${nextUngeneratedCategory.name}`}
+                        title={`Saltar a: ${nextUngeneratedCategory.name} (${nextUngeneratedCategory.passed_weigh_in} pesado${nextUngeneratedCategory.passed_weigh_in === 1 ? '' : 's'})`}
                       >
                         <span>Próxima sin sortear</span>
                         <ArrowRight className="w-3 h-3" />

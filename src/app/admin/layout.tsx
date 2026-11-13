@@ -7,6 +7,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { AdminSidebar } from '@/components/admin/admin-sidebar';
 import { AdminTopHeader } from '@/components/admin/admin-top-header';
+import { getAdminSessionProfileAction } from '@/app/actions/auth';
 
 export default async function AdminLayout({
   children,
@@ -19,11 +20,14 @@ export default async function AdminLayout({
   if (!adminRole) {
     redirect('/');
   }
+
+  const userProfile = await getAdminSessionProfileAction();
+
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-amber-500 selection:text-slate-950 print:bg-white print:text-black">
       {/* BARRA LATERAL PROFESIONAL */}
       <div className="print:hidden">
-        <AdminSidebar />
+        <AdminSidebar userProfile={userProfile} />
       </div>
 
       {/* ÁREA DE CONTENIDO PRINCIPAL */}

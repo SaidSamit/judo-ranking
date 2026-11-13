@@ -42,7 +42,7 @@ export default function TournamentsPage() {
 
   // Estados del formulario de creación
   const [formName, setFormName] = useState('');
-  const [formLocation, setFormLocation] = useState('Polideportivo Central');
+  const [formLocation, setFormLocation] = useState('');
   const [formStartDate, setFormStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [formEndDate, setFormEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [formTatamiCount, setFormTatamiCount] = useState(3);
@@ -92,6 +92,7 @@ export default function TournamentsPage() {
         setActiveTournamentId(res.tournament.id);
         setIsCreateModalOpen(false);
         setFormName('');
+        setFormLocation('');
         setFeedback({
           type: 'success',
           text: `${res.message} Entrando al panel del campeonato...`,
@@ -148,7 +149,10 @@ export default function TournamentsPage() {
 
         <button
           type="button"
-          onClick={() => setIsCreateModalOpen(true)}
+          onClick={() => {
+            setFormLocation('');
+            setIsCreateModalOpen(true);
+          }}
           className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider transition flex items-center space-x-2 shadow-lg flex-shrink-0"
         >
           <Plus className="w-4 h-4 stroke-[3]" />
