@@ -114,9 +114,10 @@ export default async function TatamiPage({ params }: TatamiPageProps) {
     // 4. Si el parámetro es un número o slug de tatami (ej: /tatami/1 o /tatami/tatami-1)
     const queueRes = await getTatamiQueueMatchesAction(tatamiNum, effectiveTournamentId);
     if (queueRes.success && queueRes.matches.length > 0) {
-      // Tomar el primer combate activo o programado en la cola (con atletas ya definidos)
+      // Tomar el primer combate activo o programado en la cola (priorizando ONGOING si ya fue llamado)
       const firstScheduled =
-        queueRes.matches.find((m: any) => m.status === 'SCHEDULED' || m.status === 'ONGOING');
+        queueRes.matches.find((m: any) => m.status === 'ONGOING') ||
+        queueRes.matches.find((m: any) => m.status === 'SCHEDULED');
 
       if (firstScheduled) {
         loadedMatch = {

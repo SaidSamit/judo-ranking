@@ -258,7 +258,7 @@ export function parseExcelRoster(fileBuffer: ArrayBuffer): {
 
     // Usar la primera hoja (Hoja1) o la hoja que contenga "Ficha" o "Inscripción"
     const targetSheetName =
-      workbook.SheetNames.find((s) => /ficha|inscrip/i.test(s)) || workbook.SheetNames[0];
+      workbook.SheetNames.find((s: string) => /ficha|inscrip/i.test(s)) || workbook.SheetNames[0];
     const sheet = workbook.Sheets[targetSheetName];
 
     // Convertir hoja a matriz de filas 2D

@@ -16,6 +16,7 @@
 'use server';
 
 import { createAdminClient } from '@/lib/supabase/admin';
+import { revalidatePath } from 'next/cache';
 
 export interface FinishMatchParams {
   matchId: string;
@@ -541,6 +542,97 @@ export async function updateMatchDurationAction(
   // Las modificaciones individuales en la Mesa de Control son gestionadas localmente
   // en IndexedDB y emitidas instantáneamente por Realtime Broadcast a los televisores.
   return { success: true };
+}
+
+/**
+ * Llama a un combate específico al tatami (Director de Torneo / Mesa).
+ * 1. Obtiene el tatami_number y tournament_id del combate llamado.
+ * 2. Si existía otro combate ONGOING en el mismo tatami que aún no ha finalizado, lo pasa a SCHEDULED.
+ * 3. Actualiza el combate llamado a status = 'ONGOING' y updated_at = now().
+ * 4. Invalida cachés y notifica inmediatamente al Monitor Multi-Tatami, Smart TVs y Mesas.
+ */
+export async function callMatchToTatamiAction(
+  matchId: string,
+  targetTatamiNumber?: number
+): Promise<{ success: boolean; message: string; match?: any; error?: string }> {
+  try {
+    const supabase = createAdminClient();
+    const nowIso = new Date().toISOString();
+
+    if (!matchId) {
+      return { success: false, message: 'ID de combate inválido', error: 'INVALID_ID' };
+    }
+
+    // 1. Consultar el combate objetivo
+    const { data: targetMatch, error: fetchErr } = await supabase
+      .from('matches')
+      .select('id, tatami_number, tournament_id, status, match_number, category:categories(name)')
+      .eq('id', matchId)
+      .maybeSingle();
+
+    if (fetchErr || !targetMatch) {
+      return { success: false, message: 'Combate no encontrado', error: fetchErr?.message || 'NOT_FOUND' };
+    }
+
+    const effectiveTatami = targetTatamiNumber || targetMatch.tatami_number;
+    const tourId = targetMatch.tournament_id;
+
+    // 2. Si existía otro combate ONGOING en este tatami que NO ha finalizado,
+    // pasarlo a SCHEDULED para que no haya dos combates simultáneos en curso
+    const { data: previousOngoing } = await supabase
+      .from('matches')
+      .select('id')
+      .eq('tournament_id', tourId)
+      .eq('tatami_number', effectiveTatami)
+      .eq('status', 'ONGOING')
+      .neq('id', matchId);
+
+    if (previousOngoing && previousOngoing.length > 0) {
+      for (const prev of previousOngoing) {
+        await supabase
+          .from('matches')
+          .update({ status: 'SCHEDULED', updated_at: nowIso })
+          .eq('id', prev.id);
+      }
+    }
+
+    // 3. Activar el combate llamado a ONGOING (y asegurar su tatami_number si se especificó otro)
+    const updatePayload: Record<string, any> = {
+      status: 'ONGOING',
+      updated_at: nowIso,
+    };
+    if (targetTatamiNumber && targetTatamiNumber !== targetMatch.tatami_number) {
+      updatePayload.tatami_number = targetTatamiNumber;
+    }
+
+    const { error: updateErr } = await supabase
+      .from('matches')
+      .update(updatePayload)
+      .eq('id', matchId);
+
+    if (updateErr) {
+      return { success: false, message: 'Error activando combate en tatami', error: updateErr.message };
+    }
+
+    try {
+      revalidatePath(`/admin/tournaments/${tourId}`);
+      revalidatePath('/admin/tatamis');
+      revalidatePath(`/tatami/${effectiveTatami}`);
+      revalidatePath(`/scoreboard/tatami-${effectiveTatami}`);
+    } catch {
+      // Ignorar fallo de revalidate si se llama fuera de contexto HTTP
+    }
+
+    const catName = (targetMatch.category as any)?.name || 'Categoría';
+    return {
+      success: true,
+      message: `Combate #${targetMatch.match_number} (${catName}) llamado al Tatami ${effectiveTatami}.`,
+      match: { ...targetMatch, status: 'ONGOING', tatami_number: effectiveTatami },
+    };
+  } catch (err: any) {
+    console.error('[callMatchToTatamiAction] Error:', err);
+    return { success: false, message: err.message || 'Error inesperado llamando a tatami', error: err.message };
+  }
 }
 
 /**

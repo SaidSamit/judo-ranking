@@ -23,7 +23,7 @@ import {
   Radio,
   Layers,
 } from 'lucide-react';
-import { getTatamiQueueMatchesAction, resequenceTatamiMatchesAction } from '@/app/actions/brackets';
+import { getTatamiQueueMatchesAction, resequenceTatamiMatchesAction, callMatchToTatamiAction } from '@/app/actions/brackets';
 import { createClient } from '@/lib/supabase/client';
 
 interface QueueMatch {
@@ -114,10 +114,10 @@ export function TatamiQueueView({
       )
       .subscribe();
 
-    // 3. Intervalo de sondeo (polling de respaldo cada 5s para alta resiliencia)
+    // 3. Intervalo de sondeo (polling de respaldo rápido cada 2.5s para alta resiliencia)
     const pollTimer = setInterval(() => {
       loadMatches(true);
-    }, 5000);
+    }, 2500);
 
     return () => {
       channel.unsubscribe();
@@ -161,8 +161,13 @@ export function TatamiQueueView({
     return matches.find((m) => m.status === 'SCHEDULED')?.id;
   }, [matches]);
 
-  // Manejador: Llamar a Tatami (Redirigir al motor de arbitraje)
-  const handleCallToTatami = (matchId: string) => {
+  // Manejador: Llamar a Tatami (Sincroniza el estado ONGOING en base de datos antes de ir a mesa)
+  const handleCallToTatami = async (matchId: string) => {
+    try {
+      await callMatchToTatamiAction(matchId, tatamiNumber);
+    } catch (err) {
+      console.warn('Error llamando combate a tatami en BD:', err);
+    }
     router.push(`/tatami/${matchId}`);
   };
 

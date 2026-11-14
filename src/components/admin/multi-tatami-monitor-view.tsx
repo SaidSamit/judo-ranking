@@ -34,6 +34,7 @@ import {
 import {
   getAllTatamisQueueAction,
   reassignMatchesBatchAction,
+  callMatchToTatamiAction,
   TatamiColumn,
   MultiTatamiMatch,
 } from '@/app/actions/brackets';
@@ -55,6 +56,8 @@ export function MultiTatamiMonitorView({
   const [columns, setColumns] = useState<TatamiColumn[]>([]);
   const [loading, setLoading] = useState(true);
   const [showFinished, setShowFinished] = useState<{ [tatami: number]: boolean }>({});
+  const [callFeedback, setCallFeedback] = useState<string | null>(null);
+  const [isCallingMatch, setIsCallingMatch] = useState(false);
 
   // Estados para el Modal de Transferencia Masiva entre Tatamis
   const [transferModalState, setTransferModalState] = useState<{
@@ -99,10 +102,13 @@ export function MultiTatamiMonitorView({
 
   const handleSelectAllMatches = () => {
     const col = columns.find((c) => c.tatamiNumber === transferModalState.sourceTatami);
-    const availableUpcoming = col?.upcomingMatches || [];
+    const available = [
+      ...(col?.activeMatch && col.activeMatch.status !== 'FINISHED' ? [col.activeMatch] : []),
+      ...(col?.upcomingMatches || []),
+    ];
     setTransferModalState((prev) => ({
       ...prev,
-      selectedMatchIds: availableUpcoming.map((m) => m.id),
+      selectedMatchIds: available.map((m) => m.id),
     }));
   };
 
@@ -199,10 +205,10 @@ export function MultiTatamiMonitorView({
       )
       .subscribe();
 
-    // 3. Polling de respaldo cada 4 segundos
+    // 3. Polling de respaldo ultra-rápido (2.5 segundos)
     const timer = setInterval(() => {
       loadData(true);
-    }, 4000);
+    }, 2500);
 
     return () => {
       channel.unsubscribe();
@@ -210,9 +216,24 @@ export function MultiTatamiMonitorView({
     };
   }, [loadData]);
 
-  // Manejador: Llamar a Tatami
-  const handleCallMatch = (matchId: string) => {
-    router.push(`/tatami/${matchId}`);
+  // Manejador: Llamar a Tatami (mantiene al Director en el monitor y actualiza inmediatamente en vivo)
+  const handleCallMatch = async (matchId: string) => {
+    setIsCallingMatch(true);
+    setCallFeedback(null);
+    try {
+      const res = await callMatchToTatamiAction(matchId);
+      if (res.success) {
+        setCallFeedback(res.message);
+        await loadData(false);
+      } else {
+        setCallFeedback(`Aviso: ${res.message || res.error}`);
+      }
+    } catch (err: any) {
+      setCallFeedback(`Error: ${err.message || 'Error de conexión'}`);
+    } finally {
+      setIsCallingMatch(false);
+      setTimeout(() => setCallFeedback(null), 5000);
+    }
   };
 
   const toggleFinished = (tatamiNum: number) => {
@@ -288,6 +309,20 @@ export function MultiTatamiMonitorView({
           </button>
         </div>
       </header>
+
+      {/* BANNER DE NOTIFICACIÓN DE LLAMADO A TATAMI */}
+      {callFeedback && (
+        <div
+          className={`p-3.5 rounded-2xl text-xs font-bold flex items-center space-x-2.5 transition shadow-lg ${
+            callFeedback.toLowerCase().includes('error') || callFeedback.toLowerCase().includes('aviso')
+              ? 'bg-amber-950/80 border border-amber-500/50 text-amber-200'
+              : 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-300'
+          }`}
+        >
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span>{callFeedback}</span>
+        </div>
+      )}
 
       {/* ÁREA DE COLUMNAS MULTI-TATAMI (EN CASCADA) */}
       {columns.length === 0 ? (
@@ -426,7 +461,10 @@ export function MultiTatamiMonitorView({
             <div className="space-y-2 overflow-y-auto flex-1 pr-1 max-h-[40vh]">
               {(() => {
                 const col = columns.find((c) => c.tatamiNumber === transferModalState.sourceTatami);
-                const matches = col?.upcomingMatches || [];
+                const matches = [
+                  ...(col?.activeMatch && col.activeMatch.status !== 'FINISHED' ? [col.activeMatch] : []),
+                  ...(col?.upcomingMatches || []),
+                ];
 
                 if (matches.length === 0) {
                   return (
