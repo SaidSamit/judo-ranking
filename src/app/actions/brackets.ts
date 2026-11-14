@@ -4,6 +4,7 @@
 
 'use server';
 
+import { revalidatePath } from 'next/cache';
 import { createAdminClient } from '@/lib/supabase/admin';
 import {
   generateCategoryBracket,
@@ -14,7 +15,7 @@ import {
   estimateCategoryMatchesCount,
   formatRoundName,
 } from '@/lib/rules/bracket-engine';
-import { sortCategories, compareJudoCategories } from '@/lib/rules/judo-categories';
+import { sortCategories, compareJudoCategories, resolveCategoryAgeRank } from '@/lib/rules/judo-categories';
 
 export interface CategoryBracketStatus {
   id: string;
@@ -92,10 +93,12 @@ export async function getTournamentCategoriesStatusAction(
       athleteCountByCat.set(r.category_id, (athleteCountByCat.get(r.category_id) || 0) + 1);
     });
 
-    // Carga acumulada por tatami
+    // Carga acumulada por tatami y distribución por grupos de edad
     const tatamiLoad = new Map<number, number>();
+    const tatamiAgeCount = new Map<number, Map<number, number>>();
     for (let t = 1; t <= tatamiCount; t++) {
       tatamiLoad.set(t, 0);
+      tatamiAgeCount.set(t, new Map<number, number>());
     }
 
     // Contabilizar la carga de categorías que ya tienen tatami asignado válido
@@ -104,6 +107,9 @@ export async function getTournamentCategoriesStatusAction(
         const count = athleteCountByCat.get(cat.id) || 4;
         const est = estimateCategoryMatchesCount(count);
         tatamiLoad.set(cat.assigned_tatami_number, (tatamiLoad.get(cat.assigned_tatami_number) || 0) + est);
+        const ageRank = resolveCategoryAgeRank(cat).rank;
+        const map = tatamiAgeCount.get(cat.assigned_tatami_number)!;
+        map.set(ageRank, (map.get(ageRank) || 0) + 1);
       }
     });
 
@@ -118,19 +124,31 @@ export async function getTournamentCategoriesStatusAction(
     });
 
     for (const cat of unassignedCats) {
+      const ageRank = resolveCategoryAgeRank(cat).rank;
       let bestTatami = 1;
-      let minLoad = Infinity;
+      let minAgeCount = Infinity;
+      let minOverallLoad = Infinity;
+
       for (let t = 1; t <= tatamiCount; t++) {
+        const ageCount = tatamiAgeCount.get(t)!.get(ageRank) || 0;
         const currentLoad = tatamiLoad.get(t) || 0;
-        if (currentLoad < minLoad) {
-          minLoad = currentLoad;
+
+        if (ageCount < minAgeCount) {
+          minAgeCount = ageCount;
+          minOverallLoad = currentLoad;
           bestTatami = t;
+        } else if (ageCount === minAgeCount) {
+          if (currentLoad < minOverallLoad) {
+            minOverallLoad = currentLoad;
+            bestTatami = t;
+          }
         }
       }
 
       cat.assigned_tatami_number = bestTatami;
       const catLoad = estimateCategoryMatchesCount(athleteCountByCat.get(cat.id) || 4);
-      tatamiLoad.set(bestTatami, minLoad + catLoad);
+      tatamiAgeCount.get(bestTatami)!.set(ageRank, minAgeCount + 1);
+      tatamiLoad.set(bestTatami, (tatamiLoad.get(bestTatami) || 0) + catLoad);
 
       await supabase
         .from('categories')
@@ -1212,8 +1230,13 @@ export async function saveModifiedBracketAction(params: {
 }
 
 /**
- * Re-secuencia todos los combates de un tatami utilizando el secuenciador anticonsecutivo IJF.
- * Garantiza números correlativos continuos (1, 2, 3...) y descansos balanceados.
+ * Re-secuencia los combates pendientes de un tatami utilizando el secuenciador anticonsecutivo IJF.
+ * Garantiza:
+ * 1. Los combates físicos reales terminados (FINISHED) o en curso (IN_PROGRESS) permanecen estrictamente intactos.
+ * 2. Los combates físicos pendientes se ordenan cronológicamente por edad (Sub-7 -> Sub-9 -> Sub-11...).
+ * 3. Los combates reales en disputa inician desde el combate #1 (o tras el último combate real finalizado).
+ * 4. Las proclamaciones automáticas de campeón directo (uncontested) reciben numeración reservada posterior.
+ * CERO BORRADOS.
  */
 export async function resequenceTatamiMatchesAction(
   tournamentId: string,
@@ -1222,6 +1245,43 @@ export async function resequenceTatamiMatchesAction(
   try {
     const supabase = createAdminClient();
 
+    // 1. Consultar categorías e inscripciones para construir el mapa de prioridades por edad
+    const { data: categories } = await supabase
+      .from('categories')
+      .select('id, name, age_group, gender')
+      .eq('tournament_id', tournamentId);
+
+    const { data: registrations } = await supabase
+      .from('tournament_registrations')
+      .select('category_id, athlete_id, athletes (birth_date)')
+      .eq('tournament_id', tournamentId);
+
+    const birthYearsByCat = new Map<string, number[]>();
+    (registrations || []).forEach((r: any) => {
+      const ath = Array.isArray(r.athletes) ? r.athletes[0] : r.athletes;
+      const bDate = ath?.birth_date;
+      if (bDate) {
+        const year = new Date(bDate).getFullYear();
+        if (!isNaN(year) && year > 1900 && year < 2100) {
+          const list = birthYearsByCat.get(r.category_id) || [];
+          list.push(year);
+          birthYearsByCat.set(r.category_id, list);
+        }
+      }
+    });
+
+    const categoryPriorityMap = new Map<string, number>();
+    (categories || []).forEach((cat) => {
+      const bYears = birthYearsByCat.get(cat.id) || [];
+      const ageRank = resolveCategoryAgeRank({
+        name: cat.name,
+        age_group: cat.age_group,
+        athlete_birth_years: bYears,
+      }).rank;
+      categoryPriorityMap.set(cat.id, ageRank);
+    });
+
+    // 2. Consultar todos los combates de este tatami
     const { data: matches, error } = await supabase
       .from('matches')
       .select('*')
@@ -1233,7 +1293,36 @@ export async function resequenceTatamiMatchesAction(
       return { success: true };
     }
 
-    const sequenced = sequenceTatamiMatches(matches as any[], 1);
+    // 3. Separar combates reales en disputa de proclamaciones sin contendor
+    const isRealFight = (m: any) => !!(m.white_athlete_id && m.blue_athlete_id);
+
+    const realLockedMatches = matches.filter(
+      (m: any) => isRealFight(m) && (m.status === 'FINISHED' || m.status === 'IN_PROGRESS')
+    );
+    const realPendingMatches = matches.filter(
+      (m: any) => m.status === 'SCHEDULED' || m.status === 'PENDING'
+    );
+    const uncontestedMatches = matches.filter(
+      (m: any) => !isRealFight(m) && m.status === 'FINISHED'
+    );
+
+    if (realPendingMatches.length === 0 && uncontestedMatches.length === 0) {
+      return { success: true };
+    }
+
+    // La cola física de combates reales inicia en el #1 si no hay peleas reales finalizadas aún
+    const startNum =
+      realLockedMatches.length > 0
+        ? Math.max(...realLockedMatches.map((m: any) => m.match_number || 0)) + 1
+        : 1;
+
+    // 4. Secuenciar los combates pendientes utilizando la regla de descanso IJF
+    // y el mapa de prioridades de edad (los judokas más jóvenes combaten primero)
+    const sequenced = sequenceTatamiMatches(
+      realPendingMatches as any[],
+      startNum,
+      categoryPriorityMap
+    );
 
     for (const m of sequenced) {
       await supabase
@@ -1242,10 +1331,335 @@ export async function resequenceTatamiMatchesAction(
         .eq('id', m.id);
     }
 
+    // Los combates sin contendor (campeón directo en papel) reciben un match_number reservado
+    // posterior a los combates reales para no colisionar ni interferir en la cola del tatami
+    const uncontestedStart = startNum + sequenced.length;
+    for (let i = 0; i < uncontestedMatches.length; i++) {
+      await supabase
+        .from('matches')
+        .update({ match_number: uncontestedStart + i })
+        .eq('id', uncontestedMatches[i].id);
+    }
+
     return { success: true };
   } catch (err: any) {
     console.error('[resequenceTatamiMatchesAction] Error:', err);
     return { success: false, error: err.message };
+  }
+}
+
+/**
+ * REBALANCEO EQUITATIVO DE TATAMIS Y ORDENAMIENTO DE COMBATES POR EDAD
+ *
+ * 1. Lee todas las categorías del torneo (incluyendo las creadas por el usuario manualmente o por Excel).
+ * 2. Implementa el Sistema Híbrido Inteligente (Opción 1): clasifica por nombre canónico, valida con fechas
+ *    de nacimiento reales de los judokas y sanea la columna categories.age_group en Supabase.
+ * 3. Diferencia combates físicos reales de proclamaciones sin contendor (uncontested): los campeones directos
+ *    no bloquean categorías ni saturan artificialmente los tatamis.
+ * 4. Reparte equitativamente las categorías activas entre los tatamis configurados (ej: 4 sub-9 -> 2 tatami 1 y 2 tatami 2).
+ * 5. Equilibra la carga total de combates (algoritmo LPT).
+ * 6. Protege combates y categorías en curso/terminadas (isLocked = true, no se tocan).
+ * 7. Ordena cronológicamente los combates en cada tatami por edad (iniciando en el combate #1 con los más jóvenes).
+ * 8. SEGURIDAD DE PRODUCCIÓN: CERO BORRADOS (ningún delete ni alteración de resultados).
+ */
+export async function rebalanceTournamentTatamisAction(params: {
+  tournamentId?: string;
+}): Promise<{
+  success: boolean;
+  message: string;
+  rebalancedCategoriesCount?: number;
+  totalMatchesResequenced?: number;
+  error?: string;
+}> {
+  try {
+    const supabase = createAdminClient();
+
+    let targetTourId: string = params.tournamentId || '';
+    if (!targetTourId || targetTourId === 'e0000000-0000-0000-0000-000000000001') {
+      const { data: activeTour } = await supabase
+        .from('tournaments')
+        .select('id')
+        .eq('status', 'ACTIVE')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      targetTourId = activeTour?.id || 'e0000000-0000-0000-0000-000000000001';
+    }
+
+    // 1. Obtener la cantidad de tatamis configurados en el torneo
+    const { data: tourData } = await supabase
+      .from('tournaments')
+      .select('id, config')
+      .eq('id', targetTourId)
+      .maybeSingle();
+
+    const tatamiCount = Math.max(1, Number((tourData?.config as any)?.tatami_count) || 2);
+
+    // 2. Obtener TODAS las categorías del torneo (incluye categorías del usuario)
+    const { data: categories, error: catErr } = await supabase
+      .from('categories')
+      .select('id, name, age_group, gender, assigned_tatami_number')
+      .eq('tournament_id', targetTourId);
+
+    if (catErr) throw new Error(catErr.message);
+    if (!categories || categories.length === 0) {
+      return {
+        success: true,
+        message: 'No hay categorías configuradas para rebalancear.',
+        rebalancedCategoriesCount: 0,
+      };
+    }
+
+    // 3. Obtener todos los combates del torneo para conocer su estado
+    const { data: existingMatches, error: matchErr } = await supabase
+      .from('matches')
+      .select('id, category_id, tatami_number, match_number, status, round, white_athlete_id, blue_athlete_id')
+      .eq('tournament_id', targetTourId);
+
+    if (matchErr) throw new Error(matchErr.message);
+
+    // 4. Obtener inscripciones y fechas de nacimiento de atletas para evaluación biométrica (Opción 1)
+    const { data: registrations } = await supabase
+      .from('tournament_registrations')
+      .select('id, category_id, weigh_in_status, athlete_id, athletes (birth_date)')
+      .eq('tournament_id', targetTourId);
+
+    const birthYearsByCat = new Map<string, number[]>();
+    (registrations || []).forEach((r: any) => {
+      const ath = Array.isArray(r.athletes) ? r.athletes[0] : r.athletes;
+      const bDate = ath?.birth_date;
+      if (bDate) {
+        const year = new Date(bDate).getFullYear();
+        if (!isNaN(year) && year > 1900 && year < 2100) {
+          const list = birthYearsByCat.get(r.category_id) || [];
+          list.push(year);
+          birthYearsByCat.set(r.category_id, list);
+        }
+      }
+    });
+
+    const matchesByCat = new Map<string, any[]>();
+    (existingMatches || []).forEach((m) => {
+      const list = matchesByCat.get(m.category_id) || [];
+      list.push(m);
+      matchesByCat.set(m.category_id, list);
+    });
+
+    const regsByCat = new Map<string, any[]>();
+    (registrations || []).forEach((r) => {
+      const list = regsByCat.get(r.category_id) || [];
+      list.push(r);
+      regsByCat.set(r.category_id, list);
+    });
+
+    // 5. Determinar la carga de combates y el estado de bloqueo de cada categoría
+    // REGLA CRÍTICA: Una categoría solo está bloqueada si tiene combates REALES (físicos) en curso o finalizados.
+    // Los campeones directos (1 judoka, sin combate físico) no bloquean ni saturan los tatamis.
+    const isRealFight = (m: any) => !!(m.white_athlete_id && m.blue_athlete_id);
+    const lockedCategoryIds = new Set<string>();
+    const categoryLoadMap = new Map<string, number>();
+    const uncontestedCategoryIds = new Set<string>();
+
+    for (const cat of categories) {
+      const catMatches = matchesByCat.get(cat.id) || [];
+      const hasRealLiveMatches = catMatches.some(
+        (m) => isRealFight(m) && (m.status === 'FINISHED' || m.status === 'IN_PROGRESS')
+      );
+      if (hasRealLiveMatches) {
+        lockedCategoryIds.add(cat.id);
+      }
+
+      // Detectar categoría con solo campeón directo (1 judoka)
+      const isUncontested =
+        catMatches.length === 1 && !catMatches[0].blue_athlete_id && catMatches[0].status === 'FINISHED';
+      if (isUncontested) {
+        uncontestedCategoryIds.add(cat.id);
+      }
+
+      let load = 0;
+      if (isUncontested) {
+        load = 0; // No consume tiempo en la lona del tatami
+      } else if (catMatches.length > 0) {
+        load = catMatches.length;
+      } else {
+        const catRegs = regsByCat.get(cat.id) || [];
+        const passed = catRegs.filter((r) => r.weigh_in_status === 'PASSED').length;
+        const total = catRegs.length;
+        const count = passed > 0 ? passed : total;
+        load = count > 1 ? estimateCategoryMatchesCount(count) : 0;
+      }
+      categoryLoadMap.set(cat.id, load);
+
+      // SANEAMIENTO AUTOMÁTICO DE BASE DE DATOS (OPCIÓN 1):
+      // Si la división inferida por nombre/biometría no coincide con age_group en BD, sanear en Supabase
+      const bYears = birthYearsByCat.get(cat.id) || [];
+      const resolved = resolveCategoryAgeRank({
+        name: cat.name,
+        age_group: cat.age_group,
+        athlete_birth_years: bYears,
+      });
+
+      if (resolved.canonicalAgeGroup && cat.age_group !== resolved.canonicalAgeGroup) {
+        await supabase
+          .from('categories')
+          .update({ age_group: resolved.canonicalAgeGroup })
+          .eq('id', cat.id);
+        cat.age_group = resolved.canonicalAgeGroup;
+      }
+    }
+
+    // 6. Inicializar contadores por tatami (1 .. tatamiCount)
+    const tatamiLoad = new Map<number, number>();
+    const tatamiAgeCount = new Map<number, Map<number, number>>();
+
+    for (let t = 1; t <= tatamiCount; t++) {
+      tatamiLoad.set(t, 0);
+      tatamiAgeCount.set(t, new Map<number, number>());
+    }
+
+    // Contabilizar categorías bloqueadas en su tatami actual para respetar el progreso en vivo
+    for (const cat of categories) {
+      if (lockedCategoryIds.has(cat.id)) {
+        const curTatami = Math.min(Math.max(1, cat.assigned_tatami_number || 1), tatamiCount);
+        const bYears = birthYearsByCat.get(cat.id) || [];
+        const ageRank = resolveCategoryAgeRank({
+          name: cat.name,
+          age_group: cat.age_group,
+          athlete_birth_years: bYears,
+        }).rank;
+        const load = categoryLoadMap.get(cat.id) || 1;
+
+        tatamiLoad.set(curTatami, (tatamiLoad.get(curTatami) || 0) + load);
+        const ageMap = tatamiAgeCount.get(curTatami)!;
+        ageMap.set(ageRank, (ageMap.get(ageRank) || 0) + 1);
+      }
+    }
+
+    // 7. Filtrar categorías desbloqueadas para rebalancear
+    // Las categorías activas con combates reales se balancean con máxima precisión
+    const unlockedCategories = categories.filter((c) => !lockedCategoryIds.has(c.id));
+
+    // Separar categorías activas con combates de categorías sin contendor
+    const activeUnlockedCategories = unlockedCategories.filter((c) => !uncontestedCategoryIds.has(c.id));
+    const uncontestedUnlockedCategories = unlockedCategories.filter((c) => uncontestedCategoryIds.has(c.id));
+
+    // Agrupar categorías activas desbloqueadas por su rango de edad oficial
+    const categoriesByAge = new Map<number, typeof activeUnlockedCategories>();
+    for (const cat of activeUnlockedCategories) {
+      const bYears = birthYearsByCat.get(cat.id) || [];
+      const ageRank = resolveCategoryAgeRank({
+        name: cat.name,
+        age_group: cat.age_group,
+        athlete_birth_years: bYears,
+      }).rank;
+      const list = categoriesByAge.get(ageRank) || [];
+      list.push(cat);
+      categoriesByAge.set(ageRank, list);
+    }
+
+    // Ordenar los rangos de edad en orden ascendente (Sub-7, Sub-9, Sub-11...)
+    const sortedAgeRanks = Array.from(categoriesByAge.keys()).sort((a, b) => a - b);
+
+    // Asignaciones pendientes a guardar en BD
+    const categoryUpdates: { id: string; assigned_tatami_number: number }[] = [];
+
+    for (const ageRank of sortedAgeRanks) {
+      const catsInAge = categoriesByAge.get(ageRank)!;
+      // Heurística LPT: dentro del mismo grupo etario, ordenar categorías por mayor carga de combates primero
+      catsInAge.sort((a, b) => (categoryLoadMap.get(b.id) || 0) - (categoryLoadMap.get(a.id) || 0));
+
+      for (const cat of catsInAge) {
+        // Encontrar el tatami que tiene menos categorías de esta misma edad.
+        // Si hay empate, elegir el tatami con menor carga global de combates.
+        let bestTatami = 1;
+        let minAgeCount = Infinity;
+        let minOverallLoad = Infinity;
+
+        for (let t = 1; t <= tatamiCount; t++) {
+          const ageCount = tatamiAgeCount.get(t)!.get(ageRank) || 0;
+          const overallLoad = tatamiLoad.get(t) || 0;
+
+          if (ageCount < minAgeCount) {
+            minAgeCount = ageCount;
+            minOverallLoad = overallLoad;
+            bestTatami = t;
+          } else if (ageCount === minAgeCount) {
+            if (overallLoad < minOverallLoad) {
+              minOverallLoad = overallLoad;
+              bestTatami = t;
+            }
+          }
+        }
+
+        const catLoad = categoryLoadMap.get(cat.id) || 1;
+        tatamiAgeCount.get(bestTatami)!.set(ageRank, minAgeCount + 1);
+        tatamiLoad.set(bestTatami, (tatamiLoad.get(bestTatami) || 0) + catLoad);
+
+        if (cat.assigned_tatami_number !== bestTatami) {
+          categoryUpdates.push({ id: cat.id, assigned_tatami_number: bestTatami });
+          cat.assigned_tatami_number = bestTatami;
+        }
+      }
+    }
+
+    // Balancear también equitativamente las categorías sin contendor (campeones directos)
+    for (let i = 0; i < uncontestedUnlockedCategories.length; i++) {
+      const cat = uncontestedUnlockedCategories[i];
+      const targetTatami = (i % tatamiCount) + 1;
+      if (cat.assigned_tatami_number !== targetTatami) {
+        categoryUpdates.push({ id: cat.id, assigned_tatami_number: targetTatami });
+        cat.assigned_tatami_number = targetTatami;
+      }
+    }
+
+    // 8. Aplicar actualizaciones en base de datos para categories y sus matches pendientes
+    let rebalancedCategoriesCount = 0;
+    for (const update of categoryUpdates) {
+      await supabase
+        .from('categories')
+        .update({ assigned_tatami_number: update.assigned_tatami_number })
+        .eq('id', update.id);
+      rebalancedCategoriesCount++;
+
+      // Migrar tatami_number de los combates de la categoría
+      await supabase
+        .from('matches')
+        .update({ tatami_number: update.assigned_tatami_number })
+        .eq('tournament_id', targetTourId)
+        .eq('category_id', update.id);
+    }
+
+    // 9. Re-secuenciar cronológicamente los combates en cada tatami por edad
+    let totalMatchesResequenced = 0;
+    for (let t = 1; t <= tatamiCount; t++) {
+      const reseqRes = await resequenceTatamiMatchesAction(targetTourId, t);
+      if (reseqRes.success) {
+        totalMatchesResequenced++;
+      }
+    }
+
+    // 10. Revalidar rutas para actualización instantánea
+    try {
+      revalidatePath(`/admin/tournaments/${targetTourId}`);
+      revalidatePath('/admin/tournaments', 'layout');
+    } catch {
+      // Entorno no-SSR seguro
+    }
+
+    return {
+      success: true,
+      message: 'Tatamis rebalanceados correctamente. Se actualizó la distribución de categorías y el orden cronológico de combates.',
+      rebalancedCategoriesCount,
+      totalMatchesResequenced,
+    };
+  } catch (err: any) {
+    console.error('[rebalanceTournamentTatamisAction] Error:', err);
+    return {
+      success: false,
+      message: err.message || 'Error al rebalancear tatamis.',
+      error: err.message,
+    };
   }
 }
 

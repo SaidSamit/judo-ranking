@@ -55,6 +55,7 @@ import {
   getCategoryBracketAction,
   CategoryBracketStatus,
   reassignCategoryTatamiAction,
+  rebalanceTournamentTatamisAction,
   createTournamentCategoryAction,
   deleteTournamentCategoryAction,
   getTournamentPodiumsAction,
@@ -162,6 +163,7 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
   const [loadingBrackets, setLoadingBrackets] = useState(false);
   const [isGeneratingBrackets, setIsGeneratingBrackets] = useState(false);
   const [isReassigningTatami, setIsReassigningTatami] = useState(false);
+  const [isRebalancingTatamis, setIsRebalancingTatamis] = useState(false);
   const [isUpdatingCategoryDuration, setIsUpdatingCategoryDuration] = useState(false);
   const [isNewCategoryModalOpen, setIsNewCategoryModalOpen] = useState(false);
   const [preferredFormat5ByCategory, setPreferredFormat5ByCategory] = useState<
@@ -627,6 +629,25 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
     }
   };
 
+  const handleRebalanceTatamis = async () => {
+    setIsRebalancingTatamis(true);
+    try {
+      const res = await rebalanceTournamentTatamisAction({
+        tournamentId: tournament.id,
+      });
+      if (res.success) {
+        setFeedback({ type: 'success', text: res.message });
+        await loadBrackets();
+      } else {
+        setFeedback({ type: 'error', text: res.message || 'Error al rebalancear tatamis.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error al rebalancear tatamis.' });
+    } finally {
+      setIsRebalancingTatamis(false);
+    }
+  };
+
   const handleUpdateCategoryDuration = async (categoryId: string, durationSeconds: number) => {
     setIsUpdatingCategoryDuration(true);
     try {
@@ -1036,6 +1057,8 @@ export function TournamentDashboardView({ initialTournament }: TournamentDashboa
           }
           isReassigningTatami={isReassigningTatami}
           onReassignTatami={handleReassignTatami}
+          isRebalancingTatamis={isRebalancingTatamis}
+          onRebalanceTatamis={handleRebalanceTatamis}
           isUpdatingCategoryDuration={isUpdatingCategoryDuration}
           onUpdateCategoryDuration={handleUpdateCategoryDuration}
           isGeneratingBrackets={isGeneratingBrackets}
