@@ -125,28 +125,30 @@ export function PublicMultiTatamiMonitor({
     [tournamentId]
   );
 
-  // 4. Suscripción en Tiempo Real con Supabase + Polling de respaldo (4s)
+  // 4. Suscripción en Tiempo Real con Supabase + Polling de respaldo ultra-rápido (2.5s)
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
-      .channel(`public-multi-tatami-${tournamentId}`)
+      .channel(`public-multi-tatami-${tournamentId || 'all'}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'matches',
-          filter: tournamentId ? `tournament_id=eq.${tournamentId}` : undefined,
         },
-        () => {
-          loadData(true);
+        (payload: any) => {
+          const payloadTourId = payload?.new?.tournament_id || payload?.old?.tournament_id;
+          if (!payloadTourId || !tournamentId || payloadTourId === tournamentId) {
+            loadData(true);
+          }
         }
       )
       .subscribe();
 
     const timer = setInterval(() => {
       loadData(true);
-    }, 4000);
+    }, 2500);
 
     return () => {
       channel.unsubscribe();

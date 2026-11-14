@@ -969,7 +969,8 @@ export async function getAllTatamisQueueAction(
 }
 
 
-import { getMatchByIdAction as getMatchByIdFromMatches } from './matches';
+import { getMatchByIdAction as getMatchByIdFromMatches, callMatchToTatamiAction } from './matches';
+export { callMatchToTatamiAction };
 
 /**
  * Obtiene un combate específico por su ID con datos completos de judokas y categoría.
@@ -1713,7 +1714,7 @@ export async function reassignCategoryTatamiAction(params: {
     if (matchesToMove && matchesToMove.length > 0) {
       await supabase
         .from('matches')
-        .update({ tatami_number: newTatamiNumber })
+        .update({ tatami_number: newTatamiNumber, updated_at: new Date().toISOString() })
         .eq('tournament_id', tournamentId)
         .eq('category_id', categoryId);
 
@@ -1723,6 +1724,13 @@ export async function reassignCategoryTatamiAction(params: {
         await resequenceTatamiMatchesAction(tournamentId, oldTatami);
       }
     }
+
+    try {
+      revalidatePath(`/admin/tournaments/${tournamentId}`);
+      revalidatePath('/admin/tatamis');
+      revalidatePath(`/tatami/${newTatamiNumber}`);
+      if (oldTatami) revalidatePath(`/tatami/${oldTatami}`);
+    } catch {}
 
     return {
       success: true,
@@ -2147,18 +2155,18 @@ export async function reassignMatchesBatchAction(params: {
       return { success: false, error: 'Número de tatami de destino inválido.' };
     }
 
-    // 1. Filtrar solo combates que NO estén en curso (ONGOING) ni finalizados (FINISHED)
+    // 1. Filtrar combates transferibles (excluyendo únicamente combates finalizados FINISHED o cancelados)
     const { data: targetMatches, error: fetchErr } = await supabase
       .from('matches')
       .select('id, match_number, status, tatami_number, category_id, tournament_id')
       .in('id', matchIds)
-      .in('status', ['SCHEDULED', 'PENDING']);
+      .in('status', ['SCHEDULED', 'PENDING', 'ONGOING']);
 
     if (fetchErr) throw new Error(fetchErr.message);
     if (!targetMatches || targetMatches.length === 0) {
       return {
         success: false,
-        error: 'Ninguno de los combates seleccionados está disponible para transferir (ya finalizaron o están en curso).',
+        error: 'Ninguno de los combates seleccionados está disponible para transferir (ya finalizaron).',
       };
     }
 
@@ -2179,15 +2187,27 @@ export async function reassignMatchesBatchAction(params: {
 
     // 3. Actualizar tatami_number y correlativo para cada combate transferido
     for (const m of targetMatches) {
+      const updateData: Record<string, any> = {
+        tatami_number: newTatamiNumber,
+        match_number: startNum++,
+        updated_at: new Date().toISOString(),
+      };
+      // Si el combate estaba ONGOING en el tatami previo, al moverlo a otro tatami vuelve a SCHEDULED
+      if (m.status === 'ONGOING') {
+        updateData.status = 'SCHEDULED';
+      }
+
       await supabase
         .from('matches')
-        .update({
-          tatami_number: newTatamiNumber,
-          match_number: startNum++,
-          updated_at: new Date().toISOString(),
-        })
+        .update(updateData)
         .eq('id', m.id);
     }
+
+    try {
+      revalidatePath(`/admin/tournaments/${actualTourId}`);
+      revalidatePath('/admin/tatamis');
+      revalidatePath(`/tatami/${newTatamiNumber}`);
+    } catch {}
 
     return {
       success: true,
