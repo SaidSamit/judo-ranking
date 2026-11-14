@@ -16,6 +16,7 @@ import {
   X,
   ArrowRight,
   FileDown,
+  Scale,
 } from 'lucide-react';
 import { BracketViewer } from '@/components/admin/bracket-viewer';
 import { downloadElementAsPdf, downloadMultiplePagesAsPdf } from '@/lib/utils/pdf-downloader';
@@ -60,6 +61,8 @@ interface TournamentBracketsTabProps {
   onRemoveAthleteFromCategory?: (registration: RegisteredAthleteSummary) => Promise<void> | void;
   onDeleteCategory?: (category: CategoryBracketStatus) => Promise<void> | void;
   isMutatingCategoryAthlete?: boolean;
+  isRebalancingTatamis?: boolean;
+  onRebalanceTatamis?: () => Promise<void> | void;
 }
 
 export function TournamentBracketsTab({
@@ -86,6 +89,8 @@ export function TournamentBracketsTab({
   onRemoveAthleteFromCategory,
   onDeleteCategory,
   isMutatingCategoryAthlete = false,
+  isRebalancingTatamis = false,
+  onRebalanceTatamis,
 }: TournamentBracketsTabProps) {
   const [categorySearch, setCategorySearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<CategoryStatusFilter>('ALL');
@@ -93,6 +98,7 @@ export function TournamentBracketsTab({
 
   const [showAddAthletePanel, setShowAddAthletePanel] = useState(false);
   const [addAthleteSearch, setAddAthleteSearch] = useState('');
+  const [isConfirmingRebalance, setIsConfirmingRebalance] = useState(false);
 
   // 1. Ordenar categorías canónicamente según estructura IJF (División -> Género -> Peso numérico)
   const orderedCategories = useMemo(() => {
@@ -232,6 +238,9 @@ export function TournamentBracketsTab({
     if (!el) return;
     setIsExportingPdf(true);
     try {
+      el.classList.remove('hidden');
+      el.classList.add('block');
+
       // Obtener cada hoja oficial de categoría (.official-bracket-page)
       // para exportar página por página sin cortes de hoja ni franjas negras
       const pages = Array.from(el.querySelectorAll<HTMLElement>('.official-bracket-page'));
@@ -240,13 +249,15 @@ export function TournamentBracketsTab({
         await downloadMultiplePagesAsPdf(pages, {
           filename: `Llaves_Oficiales_${tournament.name.replace(/[\s/\\:]+/g, '_')}`,
           orientation: 'landscape',
-          backgroundColor: '#0f172a',
+          backgroundColor: '#ffffff',
           fitToPage: true,
         });
       }
     } catch (err) {
       console.error('Error generando PDF de llaves:', err);
     } finally {
+      el.classList.remove('block');
+      el.classList.add('hidden');
       setIsExportingPdf(false);
     }
   };
@@ -318,22 +329,108 @@ export function TournamentBracketsTab({
 
         {/* BALANCEO DE CARGA POR TATAMI */}
         {tatamiDistribution.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 p-2.5 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Distribución de Carga:
-            </span>
-            {tatamiDistribution.map((t) => (
-              <div
-                key={t.tatamiNum}
-                className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono"
+          <div className="flex flex-wrap items-center justify-between gap-3 p-2.5 bg-slate-950/60 rounded-xl border border-slate-800/80">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Distribución de Carga:
+              </span>
+              {tatamiDistribution.map((t) => (
+                <div
+                  key={t.tatamiNum}
+                  className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono"
+                >
+                  <span className="w-2 h-2 rounded-full bg-amber-400 shadow-sm" />
+                  <span className="text-amber-400 font-bold">Tatami #{t.tatamiNum}:</span>
+                  <span className="text-slate-300">
+                    {t.categoriesCount} cat. ({t.athletesCount} judokas)
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {onRebalanceTatamis && (
+              <button
+                type="button"
+                onClick={() => setIsConfirmingRebalance(true)}
+                disabled={isRebalancingTatamis || loadingBrackets}
+                className="px-3.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 border border-amber-500/40 text-xs font-bold transition flex items-center space-x-1.5 shadow-sm ml-auto disabled:opacity-50"
+                title="Equilibrar categorías por edad entre tatamis y ordenar combates de menor a mayor edad"
               >
-                <span className="w-2 h-2 rounded-full bg-amber-400 shadow-sm" />
-                <span className="text-amber-400 font-bold">Tatami #{t.tatamiNum}:</span>
-                <span className="text-slate-300">
-                  {t.categoriesCount} cat. ({t.athletesCount} judokas)
-                </span>
+                <Scale className={`w-3.5 h-3.5 ${isRebalancingTatamis ? 'animate-spin' : ''}`} />
+                <span>Rebalancear Tatamis</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* MODAL DE CONFIRMACIÓN: REBALANCEAR TATAMIS Y ORDEN POR EDAD */}
+        {isConfirmingRebalance && (
+          <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-center space-x-3 text-amber-400">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                  <Scale className="w-6 h-6 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">Rebalanceo de Tatamis</h3>
+                  <p className="text-xs text-slate-400">Distribución por división de edad y secuencia de combates</p>
+                </div>
               </div>
-            ))}
+
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-3 leading-relaxed">
+                <p className="text-slate-200 font-medium">
+                  ¿Desea optimizar la asignación de tatamis y el orden de la jornada?
+                </p>
+                <ul className="space-y-2.5 text-slate-300">
+                  <li className="flex items-start gap-2.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 flex-shrink-0" />
+                    <span><strong className="text-white font-semibold">Distribución proporcional:</strong> Las categorías de cada división se reparten equitativamente entre los tatamis activos.</span>
+                  </li>
+                  <li className="flex items-start gap-2.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 flex-shrink-0" />
+                    <span><strong className="text-white font-semibold">Secuencia por edad:</strong> Los combates pendientes se organizan cronológicamente iniciando con las divisiones menores.</span>
+                  </li>
+                  <li className="flex items-start gap-2.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 flex-shrink-0" />
+                    <span><strong className="text-emerald-300 font-semibold">Resguardo de datos:</strong> Los combates concluidos o en desarrollo no sufrirán ninguna modificación.</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingRebalance(false)}
+                  disabled={isRebalancingTatamis}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (onRebalanceTatamis) {
+                      await onRebalanceTatamis();
+                    }
+                    setIsConfirmingRebalance(false);
+                  }}
+                  disabled={isRebalancingTatamis}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center space-x-1.5 shadow"
+                >
+                  {isRebalancingTatamis ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Rebalanceando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Scale className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span>Confirmar Rebalanceo</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </section>
@@ -913,7 +1010,7 @@ export function TournamentBracketsTab({
       {/* ==================================================================== */}
       <div
         id="printable-brackets-container"
-        className="fixed -left-[9999px] top-0 w-[1200px] z-[-50] bg-slate-950 text-slate-100 p-6 space-y-8 pointer-events-none print:hidden"
+        className="hidden fixed left-0 top-0 z-[-999] bg-white text-slate-950 p-0 pointer-events-none print:hidden"
         aria-hidden="true"
       >
         {weighedCategories.map((cat) => {
@@ -944,13 +1041,11 @@ export function TournamentBracketsTab({
             );
 
           return (
-            <div
-              key={cat.id}
-              className="official-bracket-page w-[1150px] bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-2xl space-y-2"
-            >
+            <div key={cat.id} className="mb-6">
               <BracketViewer
                 bracketResult={catBracket}
                 categoryName={`${tournament.name} • ${cat.name} (Tatami #${cat.assigned_tatami_number})`}
+                theme="print"
               />
             </div>
           );

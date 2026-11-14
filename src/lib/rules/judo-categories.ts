@@ -320,6 +320,139 @@ export function getSuggestedUpperCategory(
 // ==============================================================================
 
 /**
+ * Clasificador universal y flexible de grupo etario para categorías de Judo.
+ * Implementa el Sistema Híbrido Inteligente (Opción 1):
+ * 1. PRIORIDAD 1: Evalúa el texto del campo `name` (ej: 'Sub-9 Femenino -28kg').
+ *    El nombre oficial explícito prevalece sobre cualquier valor desactualizado en la BD.
+ * 2. PRIORIDAD 2 (Validación Biométrica): Si el nombre no indica edad (ej: 'Especial -35kg'),
+ *    evalúa los años de nacimiento de los competidores inscritos (`athlete_birth_years`).
+ * 3. PRIORIDAD 3: Evalúa el campo `age_group` guardado en BD.
+ * 4. Retorna el rango numérico (1..10, 99), etiqueta legible y canonicalAgeGroup.
+ */
+export function resolveCategoryAgeRank(category: {
+  name: string;
+  age_group?: string | null;
+  athlete_birth_years?: number[];
+}): { rank: number; label: string; canonicalAgeGroup: string } {
+  const name = (category.name || '').trim().toLowerCase();
+
+  // 1. EVALUAR PRIMERO EL NOMBRE DE LA CATEGORÍA (MÁXIMA PRIORIDAD REGLAMENTARIA)
+  if (name.includes('sub-7') || name.includes('sub 7') || name.includes('pre-infantil')) {
+    return { rank: 1, label: 'Sub-7', canonicalAgeGroup: 'Sub-7' };
+  }
+  if (name.includes('sub-9') || name.includes('sub 9') || name.includes('sub9')) {
+    return { rank: 2, label: 'Sub-9', canonicalAgeGroup: 'Sub-9' };
+  }
+  if (name.includes('sub-11') || name.includes('sub 11') || name.includes('infantil a')) {
+    return { rank: 3, label: 'Sub-11', canonicalAgeGroup: 'Sub-11' };
+  }
+  if (name.includes('sub-13') || name.includes('sub 13') || name.includes('infantil b')) {
+    return { rank: 4, label: 'Sub-13', canonicalAgeGroup: 'Sub-13' };
+  }
+  if (name.includes('sub-15') || name.includes('sub 15')) {
+    return { rank: 5, label: 'Sub-15', canonicalAgeGroup: 'Sub-15' };
+  }
+  if (
+    name.includes('cadet') ||
+    name.includes('sub-18') ||
+    name.includes('sub 18') ||
+    name.includes('juvenil')
+  ) {
+    return { rank: 6, label: 'Cadetes (Sub-18)', canonicalAgeGroup: 'Cadetes (Sub-18)' };
+  }
+  if (
+    name.includes('junior') ||
+    name.includes('sub-21') ||
+    name.includes('sub 21')
+  ) {
+    return { rank: 7, label: 'Junior (Sub-21)', canonicalAgeGroup: 'Junior (Sub-21)' };
+  }
+  if (name.includes('novicio') || name.includes('iniciacion')) {
+    return { rank: 9, label: 'Novicios', canonicalAgeGroup: 'Novicios' };
+  }
+  if (
+    name.includes('senior') ||
+    name.includes('absolut') ||
+    name.includes('adulto') ||
+    name.includes('primera')
+  ) {
+    return { rank: 8, label: 'Senior', canonicalAgeGroup: 'Senior' };
+  }
+  if (name.includes('master') || name.includes('veteran')) {
+    return { rank: 10, label: 'Master', canonicalAgeGroup: 'Master' };
+  }
+
+  // 2. VALIDACIÓN BIOMÉTRICA POR JUDOKAS INSCRITOS (SI EL NOMBRE NO ESPECIFICA EDAD)
+  if (category.athlete_birth_years && category.athlete_birth_years.length > 0) {
+    const validYears = category.athlete_birth_years.filter((y) => y > 1900 && y < 2100);
+    if (validYears.length > 0) {
+      const divRanks = validYears.map((y) => {
+        const div = getDivisionByBirthYear(y);
+        const divGroup = div ? div.ageGroup : 'Senior';
+        return resolveCategoryAgeRank({ name: divGroup });
+      });
+
+      divRanks.sort((a, b) => a.rank - b.rank);
+      const chosen = divRanks[0];
+      if (chosen && chosen.rank < 99) {
+        return chosen;
+      }
+    }
+  }
+
+  // 3. EVALUAR CAMPO age_group SI EXISTE EN BD
+  const rawAge = (category.age_group || '').trim().toLowerCase();
+  if (rawAge) {
+    if (rawAge.includes('sub-7') || rawAge.includes('sub 7') || rawAge.includes('pre-infantil')) {
+      return { rank: 1, label: 'Sub-7', canonicalAgeGroup: 'Sub-7' };
+    }
+    if (rawAge.includes('sub-9') || rawAge.includes('sub 9') || rawAge.includes('sub9')) {
+      return { rank: 2, label: 'Sub-9', canonicalAgeGroup: 'Sub-9' };
+    }
+    if (rawAge.includes('sub-11') || rawAge.includes('sub 11') || rawAge.includes('infantil a')) {
+      return { rank: 3, label: 'Sub-11', canonicalAgeGroup: 'Sub-11' };
+    }
+    if (rawAge.includes('sub-13') || rawAge.includes('sub 13') || rawAge.includes('infantil b')) {
+      return { rank: 4, label: 'Sub-13', canonicalAgeGroup: 'Sub-13' };
+    }
+    if (rawAge.includes('sub-15') || rawAge.includes('sub 15')) {
+      return { rank: 5, label: 'Sub-15', canonicalAgeGroup: 'Sub-15' };
+    }
+    if (
+      rawAge.includes('cadet') ||
+      rawAge.includes('sub-18') ||
+      rawAge.includes('sub 18') ||
+      rawAge.includes('juvenil')
+    ) {
+      return { rank: 6, label: 'Cadetes (Sub-18)', canonicalAgeGroup: 'Cadetes (Sub-18)' };
+    }
+    if (
+      rawAge.includes('junior') ||
+      rawAge.includes('sub-21') ||
+      rawAge.includes('sub 21')
+    ) {
+      return { rank: 7, label: 'Junior (Sub-21)', canonicalAgeGroup: 'Junior (Sub-21)' };
+    }
+    if (rawAge.includes('novicio') || rawAge.includes('iniciacion')) {
+      return { rank: 9, label: 'Novicios', canonicalAgeGroup: 'Novicios' };
+    }
+    if (
+      rawAge.includes('senior') ||
+      rawAge.includes('absolut') ||
+      rawAge.includes('adulto') ||
+      rawAge.includes('primera')
+    ) {
+      return { rank: 8, label: 'Senior', canonicalAgeGroup: 'Senior' };
+    }
+    if (rawAge.includes('master') || rawAge.includes('veteran')) {
+      return { rank: 10, label: 'Master', canonicalAgeGroup: 'Master' };
+    }
+  }
+
+  return { rank: 99, label: category.name || 'Otras', canonicalAgeGroup: category.age_group || 'Otras' };
+}
+
+/**
  * Retorna la jerarquía numérica de la división de edad.
  * 1. Sub-7
  * 2. Sub-9
@@ -331,22 +464,10 @@ export function getSuggestedUpperCategory(
  * 8. Senior / Absoluto
  * 9. Novicios (Novicio Juvenil, Novicio Adulto)
  * 10. Master / Veteranos
+ * 99. Otras / Personalizadas
  */
-export function getDivisionSortRank(name: string): number {
-  if (!name) return 99;
-  const lower = name.toLowerCase();
-  if (lower.includes('sub-7') || lower.includes('sub 7')) return 1;
-  if (lower.includes('sub-9') || lower.includes('sub 9')) return 2;
-  if (lower.includes('sub-11') || lower.includes('sub 11')) return 3;
-  if (lower.includes('sub-13') || lower.includes('sub 13')) return 4;
-  if (lower.includes('sub-15') || lower.includes('sub 15')) return 5;
-  if (lower.includes('cadet') || lower.includes('sub-18') || lower.includes('sub 18')) return 6;
-  if (lower.includes('junior') || lower.includes('sub-21') || lower.includes('sub 21')) return 7;
-  // Validar 'novicio' antes de 'adulto' para no confundir 'Novicio Adulto' con Senior
-  if (lower.includes('novicio')) return 9;
-  if (lower.includes('senior') || lower.includes('absolut') || lower.includes('adulto')) return 8;
-  if (lower.includes('master') || lower.includes('veteran')) return 10;
-  return 99;
+export function getDivisionSortRank(name: string, ageGroup?: string | null): number {
+  return resolveCategoryAgeRank({ name, age_group: ageGroup }).rank;
 }
 
 /**
@@ -398,13 +519,13 @@ export function getWeightSortValue(categoryName: string): number {
  * Compara por: 1) División etaria, 2) Género, 3) Límite de peso numérico ascendente.
  */
 export function compareJudoCategories(
-  catA: { name: string; gender?: string },
-  catB: { name: string; gender?: string }
+  catA: { name: string; gender?: string; age_group?: string | null },
+  catB: { name: string; gender?: string; age_group?: string | null }
 ): number {
   const nameA = catA?.name || '';
   const nameB = catB?.name || '';
 
-  const divDiff = getDivisionSortRank(nameA) - getDivisionSortRank(nameB);
+  const divDiff = getDivisionSortRank(nameA, catA?.age_group) - getDivisionSortRank(nameB, catB?.age_group);
   if (divDiff !== 0) return divDiff;
 
   const genDiff = getGenderSortRank(nameA, catA?.gender) - getGenderSortRank(nameB, catB?.gender);

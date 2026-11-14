@@ -38,8 +38,12 @@ export async function downloadElementAsPdf(
     scale: 2, // 2x para nitidez vectorial en textos
     useCORS: true,
     logging: false,
-    backgroundColor: options.backgroundColor || '#0f172a',
+    backgroundColor: options.backgroundColor || '#ffffff',
     windowWidth: element.scrollWidth || 1200,
+    scrollX: 0,
+    scrollY: 0,
+    x: 0,
+    y: 0,
   });
 
   const imgData = canvas.toDataURL('image/png');
@@ -117,8 +121,12 @@ export async function downloadMultiplePagesAsPdf(
       scale: 2,
       useCORS: true,
       logging: false,
-      backgroundColor: options.backgroundColor || '#0f172a',
+      backgroundColor: options.backgroundColor || '#ffffff',
       windowWidth: el.scrollWidth || 1200,
+      scrollX: 0,
+      scrollY: 0,
+      x: 0,
+      y: 0,
     });
 
     const imgData = canvas.toDataURL('image/png');

@@ -1018,7 +1018,8 @@ export function estimateCategoryMatchesCount(
  */
 export function sequenceTatamiMatches(
   matches: GeneratedMatch[],
-  startMatchNumber: number = 1
+  startMatchNumber: number = 1,
+  categoryPriorityMap?: Map<string, number>
 ): GeneratedMatch[] {
   if (!matches || matches.length <= 1) {
     return matches.map((m, idx) => ({ ...m, match_number: startMatchNumber + idx }));
@@ -1050,14 +1051,26 @@ export function sequenceTatamiMatches(
       if (prevMatch.blue_athlete_id) prevAthletes.add(prevMatch.blue_athlete_id);
     }
 
+    // Si hay mapa de prioridades (ej: grupos etarios Sub-7, Sub-9, Sub-11...),
+    // filtrar el conjunto activo al bloque de edad más prioritario disponible en el tatami
+    let pool = remaining;
+    if (categoryPriorityMap && categoryPriorityMap.size > 0) {
+      let minPrio = Infinity;
+      for (const m of remaining) {
+        const p = categoryPriorityMap.get(m.category_id) ?? 999999;
+        if (p < minPrio) minPrio = p;
+      }
+      pool = remaining.filter((m) => (categoryPriorityMap.get(m.category_id) ?? 999999) === minPrio);
+    }
+
     // Candidatos que NO comparten ningún atleta con el combate inmediatamente anterior
-    const nonConsecutiveCandidates = remaining.filter((m) => {
+    const nonConsecutiveCandidates = pool.filter((m) => {
       const whiteInPrev = m.white_athlete_id ? prevAthletes.has(m.white_athlete_id) : false;
       const blueInPrev = m.blue_athlete_id ? prevAthletes.has(m.blue_athlete_id) : false;
       return !whiteInPrev && !blueInPrev;
     });
 
-    const candidates = nonConsecutiveCandidates.length > 0 ? nonConsecutiveCandidates : remaining;
+    const candidates = nonConsecutiveCandidates.length > 0 ? nonConsecutiveCandidates : pool;
 
     // Seleccionar el mejor candidato:
     // 1. Menor peso de ronda (respetar la progresión del torneo)
